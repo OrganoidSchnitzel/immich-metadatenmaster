@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Locations{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', path='vendor/leaflet/leaflet.css') }}">{% endblock %}
+{% block content %}
+<div id="app" data-tz="{{ timezone }}" data-tiles="{{ tile_url }}" data-attribution="{{ attribution }}"
+     data-immich="{{ immich_url }}">
+  {% if error %}<div class="notice error"><strong>Cannot reach Immich.</strong> {{ error }}</div>{% endif %}
+  <div class="section-head">
+    <h1>Locations</h1>
+    <span class="muted">Photos without a location get the position you were at when they were taken.</span>
+  </div>
+
+  <div class="geo-layout">
+    <div class="geo-side">
+      <section class="panel">
+        <h2>1. GPX tracks</h2>
+        <label class="drop" id="drop">
+          <input type="file" id="gpx-file" accept=".gpx,application/gpx+xml" multiple hidden>
+          <strong>Drop GPX files here</strong> or click to choose them.
+          <span class="muted">Komoot: open a completed tour → ⋯ → <em>Download GPX</em>. Strava, Garmin and other apps work the same way.</span>
+        </label>
+        <div id="upload-status" class="hint"></div>
+        <ul id="tracks" class="tracks"><li class="muted">Loading…</li></ul>
+      </section>
+
+      <section class="panel">
+        <h2>2. Find photos without a location</h2>
+        <form id="find-form" class="geo-form" autocomplete="off">
+          <label class="check"><input type="checkbox" name="use_tracks" checked> In the time span of the ticked tracks</label>
+          <fieldset>
+            <legend>and/or in this time range <span class="muted">(optional)</span></legend>
+            <div class="row">
+              <label>From <input type="datetime-local" name="start" step="1"></label>
+              <label>to <input type="datetime-local" name="end" step="1"></label>
+            </div>
+          </fieldset>
+          <label>Only photos in album
+            <select name="album_id">
+              <option value="">(whole library)</option>
+              {% for a in albums %}<option value="{{ a.id }}">{{ a.albumName }}</option>{% endfor %}
+            </select>
+          </label>
+          <details open>
+            <summary>Camera clock</summary>
+            <label>Camera time zone <input name="camera_tz" list="timezones" placeholder="Europe/Berlin"></label>
+            <datalist id="timezones"></datalist>
+            <small class="muted">The zone the camera's clock was set to. Used for photos that do not store a time zone (most system cameras).</small>
+            <label class="check"><input type="checkbox" name="use_photo_tz" checked> Trust the time zone stored in a photo (phones)</label>
+            <label>Clock offset <input name="offset" placeholder="+0:00:00" size="10"></label>
+            <small class="muted">Added to the camera's time to get the real time, e.g. <code>+1:00:00</code> if the camera was an hour behind.
+              Tip: photograph your phone's clock with the camera and compare.</small>
+          </details>
+          <details>
+            <summary>Matching</summary>
+            <label>Tolerance <span><input type="number" name="tolerance_min" min="0" max="1440" value="10" class="num"> min</span></label>
+            <small class="muted">How far before the start, after the end or away from a recording pause a photo may be.</small>
+            <label>Bridge recording pauses up to <span><input type="number" name="max_gap_min" min="0" max="1440" value="15" class="num"> min</span></label>
+            <small class="muted">Longer pauses are only bridged if you stayed in place (e.g. a break at a hut).</small>
+            <label class="check"><input type="checkbox" name="use_nearby" checked> Use photos with a location (e.g. from a phone) taken up to
+              <input type="number" name="nearby_min" min="0" max="1440" value="10" class="num"> min apart</label>
+            <label class="check"><input type="checkbox" name="use_siblings" checked> Copy from other versions of the same photo
+              (<code>IMG_1234.CR2</code> → <code>IMG_1234-HDR.dng</code>)</label>
+          </details>
+          <div class="row">
+            <button type="submit" class="primary">Find suggestions</button>
+            <span class="muted">Replaces the current suggestions. Nothing is written yet.</span>
+          </div>
+        </form>
+        <div id="find-job" class="job" hidden></div>
+        <div id="find-error" class="notice error" hidden></div>
+      </section>
+    </div>
+
+    <div class="geo-main">
+      <div id="map" class="map"></div>
+      <div id="map-mode" class="map-mode" hidden>
+        Click on the map to place the <strong id="place-count"></strong> there.
+        <button type="button" id="place-cancel">Cancel</button>
+      </div>
+      <div class="legend">
+        <span><i class="dot d-gpx"></i>GPX track</span><span><i class="dot d-sibling"></i>Same-name file</span>
+        <span><i class="dot d-nearby"></i>Nearby photo</span><span><i class="dot d-map"></i>Placed by you</span>
+        <span><i class="dot d-located"></i>Already has a location</span>
+      </div>
+    </div>
+  </div>
+
+  <section id="review" class="panel sticky review" hidden>
+    <h2>3. Review and write</h2>
+    <div id="run-summary" class="muted"></div>
+    <div id="hint" class="notice warn" hidden></div>
+    <div class="selection row">
+      <strong id="sel-count"></strong>
+      <button type="button" data-select="all">All</button>
+      <button type="button" data-select="none">None</button>
+      <button type="button" data-select="ok">With suggestion</button>
+      <button type="button" data-select="high">High confidence</button>
+      <button type="button" data-select="no_match">Without suggestion</button>
+      <select id="camera-filter" title="Show only photos of one camera"><option value="">All cameras</option></select>
+    </div>
+    <div class="row">
+      <button type="button" id="geo-apply" class="primary" disabled>Write locations</button>
+      <label class="check" id="fix-time-opt" hidden title="Only if the camera's clock was wrong, not if just the time zone above was"><input type="checkbox" id="fix-time"> Also correct the photo times by the clock offset</label>
+      <button type="button" id="geo-place" disabled>Place selected on the map…</button>
+      <button type="button" id="geo-discard" disabled>Discard</button>
+    </div>
+    <div id="apply-job" class="job" hidden></div>
+    <div id="apply-result" class="job-result" hidden></div>
+  </section>
+
+  <section>
+    <div id="geo-grid" class="grid"></div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='common.js') }}"></script>
+<script src="{{ url_for('static', path='vendor/leaflet/leaflet.js') }}"></script>
+<script src="{{ url_for('static', path='locations.js') }}"></script>{% endblock %}

@@ -1,0 +1,15 @@
+# Standalone setup: `docker compose up -d`, then open http://<server>:8080 and fill in the Settings page.
+# To run it inside Immich's own docker-compose.yml instead, copy the service below into that file
+# and use http://immich-server:2283 as the Immich URL (see README).
+services:
+  metadatenmaster:
+    image: ghcr.io/organoidschnitzel/immich-metadatenmaster:latest
+    # build: .   # or build it yourself from this repository
+    container_name: immich-metadatenmaster
+    ports:
+      - "8080:8080"   # LAN only: the UI has no login and holds an Immich API key
+    volumes:
+      - ./metadatenmaster-data:/data   # settings, GPX tracks, local records and the downloaded model
+    environment:
+      TZ: Europe/Berlin            # optional; settings can also be given here, see .env.example
+    restart: unless-stopped

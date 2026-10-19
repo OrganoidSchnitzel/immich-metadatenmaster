@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Dates{% endblock %}
+{% block content %}
+{% if error %}
+  <div class="notice error"><strong>Cannot reach Immich.</strong> {{ error }}</div>
+{% endif %}
+
+<section class="intro">
+  <h1>Date photos</h1>
+  <ol class="steps">
+    <li>Put a batch of photos (e.g. scans) into its own <strong>Immich album</strong> and let Immich finish face detection.</li>
+    <li>Name the people in Immich and set their <a href="/people">birthdays</a>.</li>
+    <li>Open the album here. Write the date you know, estimate it from the ages of the people in the photos,
+      or take it from the file names. Suggestions are only written when you accept them.</li>
+  </ol>
+</section>
+
+<section>
+  <div class="section-head">
+    <h2>Albums</h2>
+    {% if version %}<span class="muted">Immich {{ version }}</span>{% endif %}
+  </div>
+  {% if albums %}
+  <ul class="album-list">
+    {% for a in albums %}
+    <li>
+      <a href="/album/{{ a.id }}">
+        {% if a.albumThumbnailAssetId %}<img src="/thumb/{{ a.albumThumbnailAssetId }}" alt="" loading="lazy">{% else %}<span class="noimg"></span>{% endif %}
+        <span class="name">{{ a.albumName }}</span>
+        <span class="muted">{{ a.assetCount }} item{{ "" if a.assetCount == 1 else "s" }}</span>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% elif not error %}
+  <p class="muted">No albums yet. Create one in Immich for each batch of photos.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Calibration</h2>
+  <p>
+    Model: <code>{{ calibration.backend }}</code> &middot;
+    {% if calibration.calibrated %}
+      calibrated on {{ calibration.samples }} faces ({{ calibration.created_at }}),
+      {{ calibration.people_with_bias }} people with a personal correction.
+    {% else %}
+      <strong>not calibrated yet</strong> &ndash; a generic error model is used.
+    {% endif %}
+  </p>
+  <p class="muted">Calibration runs the model on photos of your people whose date is known (digital camera photos, and scans you dated here) and learns how far off it typically is, per age and per person.</p>
+  <div class="row">
+    <label>Photos per person <input id="per-person" type="number" min="5" max="1000" value="60"></label>
+    <button id="calibrate" class="primary">Run calibration</button>
+  </div>
+  <div id="calibration-job" class="job" hidden></div>
+  <div id="calibration-report"></div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='common.js') }}"></script>
+<script src="{{ url_for('static', path='dates.js') }}"></script>{% endblock %}

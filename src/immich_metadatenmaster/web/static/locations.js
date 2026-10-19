@@ -1,0 +1,531 @@
+"use strict";
+
+const app = document.getElementById("app");
+const immichUrl = app.dataset.immich;
+const form = document.getElementById("find-form");
+const grid = document.getElementById("geo-grid");
+const review = document.getElementById("review");
+const selCount = document.getElementById("sel-count");
+const applyBtn = document.getElementById("geo-apply");
+const placeBtn = document.getElementById("geo-place");
+const discardBtn = document.getElementById("geo-discard");
+const cameraFilter = document.getElementById("camera-filter");
+
+const SOURCE_LABEL = { gpx: "GPX track", sibling: "Same-name file", nearby: "Nearby photo", map: "Placed by you" };
+const STORE_KEY = "metadatenmaster.locations";
+
+let tracks = [];
+let run = null;
+let items = [];
+const selected = new Set();
+let placing = false;
+
+// --- small helpers -------------------------------------------------------------------------
+
+function loadPrefs() {
+  try { return JSON.parse(localStorage.getItem(STORE_KEY) || "{}"); } catch (e) { return {}; }
+}
+
+function savePrefs(update) {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify({ ...loadPrefs(), ...update })); } catch (e) { /* private mode */ }
+}
+
+/** "+1:02:03", "-0:30", "1:00" or a number of minutes → seconds; NaN if invalid. */
+function parseOffset(text) {
+  const s = String(text || "").trim().replace(/\s+/g, "");
+  if (!s) return 0;
+  let m = s.match(/^([+-]?)(\d+):([0-5]?\d)(?::([0-5]?\d))?$/);
+  if (m) return (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 3600 + Number(m[3]) * 60 + Number(m[4] || 0));
+  m = s.match(/^([+-]?\d+(?:\.\d+)?)(m|min)?$/i);
+  if (m) return Math.round(Number(m[1]) * 60);
+  return NaN;
+}
+
+function formatOffset(seconds) {
+  const sign = seconds < 0 ? "-" : "+";
+  const s = Math.abs(seconds);
+  return `${sign}${Math.floor(s / 3600)}:${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function cameraTz() {
+  return form.elements.camera_tz.value.trim() || app.dataset.tz || "UTC";
+}
+
+function fmtInstant(iso) {
+  if (!iso) return "–";
+  try {
+    return new Date(iso).toLocaleString(undefined, { timeZone: cameraTz(), dateStyle: "medium", timeStyle: "short" });
+  } catch (e) {
+    return iso.replace("T", " ").slice(0, 16);
+  }
+}
+
+function fmtLocal(iso) { return iso ? iso.replace("T", " ").slice(0, 19) : "–"; }
+
+function fmtDiff(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)} s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
+  return `${(seconds / 3600).toFixed(1)} h`;
+}
+
+/** A datetime-local value ("2024-07-01T10:00") for an instant, in the camera time zone. */
+function toLocalInput(iso) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: cameraTz(), year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(iso));
+    const p = Object.fromEntries(parts.map(x => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+  } catch (e) {
+    return "";
+  }
+}
+
+// --- map -----------------------------------------------------------------------------------
+
+const map = L.map("map", { zoomControl: true }).setView([48, 10], 5);
+L.tileLayer(app.dataset.tiles, { maxZoom: 19, attribution: app.dataset.attribution }).addTo(map);
+const trackLayer = L.layerGroup().addTo(map);
+const locatedLayer = L.layerGroup().addTo(map);
+const suggestionLayer = L.layerGroup().addTo(map);
+const markers = new Map();
+const TRACK_COLORS = ["#4250af", "#c2410c", "#0f766e", "#a21caf", "#b45309", "#15803d", "#be123c", "#0369a1"];
+const css = getComputedStyle(document.documentElement);
+const SOURCE_COLOR = {
+  gpx: css.getPropertyValue("--src-gpx").trim() || "#2563eb",
+  sibling: css.getPropertyValue("--src-sibling").trim() || "#9333ea",
+  nearby: css.getPropertyValue("--src-nearby").trim() || "#ea580c",
+  map: css.getPropertyValue("--src-map").trim() || "#16a34a",
+};
+
+function trackColor(i) { return TRACK_COLORS[i % TRACK_COLORS.length]; }
+
+function drawTracks() {
+  trackLayer.clearLayers();
+  tracks.forEach((t, i) => {
+    if (!t.line.length) return;
+    const on = isTicked(t.id);
+    L.polyline(t.line, { color: trackColor(i), weight: on ? 4 : 2, opacity: on ? 0.85 : 0.35 })
+      .bindTooltip(esc(t.name)).addTo(trackLayer);
+  });
+}
+
+function drawSuggestions() {
+  locatedLayer.clearLayers();
+  suggestionLayer.clearLayers();
+  markers.clear();
+  for (const [lat, lon] of (run && run.located) || []) {
+    L.circleMarker([lat, lon], { radius: 3, color: "#888", weight: 1, fillOpacity: 0.5 }).addTo(locatedLayer);
+  }
+  for (const it of items) {
+    if (it.status !== "ok") continue;
+    const sel = selected.has(it.id);
+    const m = L.circleMarker([it.lat, it.lon], {
+      radius: sel ? 9 : 6, color: sel ? "#000" : "#fff", weight: 2,
+      fillColor: SOURCE_COLOR[it.source] || "#2563eb", fillOpacity: 0.9,
+    }).bindTooltip(`${esc(it.file_name)}<br>${esc(fmtLocal(it.local))}`).addTo(suggestionLayer);
+    m.on("click", () => {
+      if (placing) return;
+      toggle(it.id);
+      const card = grid.querySelector(`[data-id="${CSS.escape(it.id)}"]`);
+      if (card) card.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    markers.set(it.id, m);
+  }
+}
+
+function fitMap() {
+  const bounds = L.latLngBounds([]);
+  tracks.filter(t => isTicked(t.id)).forEach(t => t.line.forEach(p => bounds.extend(p)));
+  items.filter(it => it.status === "ok").forEach(it => bounds.extend([it.lat, it.lon]));
+  if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
+}
+
+map.on("click", async (ev) => {
+  if (!placing) return;
+  const ids = visibleSelectedIds();
+  setPlacing(false);
+  if (!ids.length) return;
+  try {
+    await api("POST", "/api/geo/place", { asset_ids: ids, lat: ev.latlng.lat, lon: ev.latlng.lng });
+    await loadSuggestions();
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+function setPlacing(on) {
+  placing = on;
+  document.getElementById("map-mode").hidden = !on;
+  document.getElementById("map").classList.toggle("placing", on);
+  if (on) {
+    const n = visibleSelectedIds().length;
+    document.getElementById("place-count").textContent = `${n} selected photo${n === 1 ? "" : "s"}`;
+    document.getElementById("map").scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
+document.getElementById("place-cancel").addEventListener("click", () => setPlacing(false));
+
+// --- tracks --------------------------------------------------------------------------------
+
+function isTicked(id) {
+  return !(loadPrefs().unticked || []).includes(id);
+}
+
+function setTicked(id, on) {
+  const unticked = new Set(loadPrefs().unticked || []);
+  on ? unticked.delete(id) : unticked.add(id);
+  savePrefs({ unticked: [...unticked] });
+}
+
+function renderTracks() {
+  const list = document.getElementById("tracks");
+  if (!tracks.length) {
+    list.innerHTML = `<li class="muted">No tracks yet. Upload a GPX file to start.</li>`;
+    return;
+  }
+  list.innerHTML = tracks.map((t, i) => {
+    const span = t.start ? `${fmtInstant(t.start)} – ${fmtInstant(t.end)}` : "";
+    const times = t.needs_times ? `
+      <div class="needs-times">
+        <div>This file has no times (a planned route). When did you walk it? A constant pace is assumed.</div>
+        <div class="row">
+          <input type="datetime-local" data-role="start" step="60" title="Start">
+          <input type="datetime-local" data-role="end" step="60" title="End">
+          <button type="button" data-action="times">Save times</button>
+        </div>
+      </div>` : (!t.has_times ? `<div class="muted">Times entered by you (assumed constant pace). <a href="#" data-action="retime">Change</a></div>` : "");
+    return `<li data-id="${esc(t.id)}">
+      <label class="check"><input type="checkbox" data-action="tick" ${isTicked(t.id) ? "checked" : ""}>
+        <i class="swatch" style="background:${trackColor(i)}"></i>
+        <span class="track-name" title="${esc(t.file_name)}">${esc(t.name)}</span></label>
+      <div class="muted">${esc(span)}${span ? " · " : ""}${t.distance_km} km · ${t.points} points</div>
+      ${times}
+      <div class="track-actions">
+        <a href="#" data-action="zoom">Show</a> · <a href="#" data-action="use">Use time span</a> ·
+        <a href="#" data-action="rename">Rename</a> · <a href="#" data-action="delete" class="danger">Delete</a>
+      </div>
+    </li>`;
+  }).join("");
+}
+
+async function loadTracks() {
+  tracks = await api("GET", "/api/tracks");
+  renderTracks();
+  drawTracks();
+}
+
+async function upload(files) {
+  const status = document.getElementById("upload-status");
+  status.classList.remove("error");
+  const errors = [];
+  let added = 0;
+  for (const file of files) {
+    status.textContent = `Uploading ${file.name}…`;
+    try {
+      const resp = await fetch(`/api/tracks?file_name=${encodeURIComponent(file.name)}`, {
+        method: "POST", headers: { "X-Metadatenmaster": "1", "Content-Type": "application/gpx+xml" }, body: file,
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || resp.statusText);
+      setTicked(data.id, true);
+      added++;
+    } catch (e) {
+      errors.push(`${file.name}: ${e.message}`);
+    }
+  }
+  status.textContent = [added ? `Added ${added} track${added === 1 ? "" : "s"}.` : "", ...errors].filter(Boolean).join(" ");
+  status.classList.toggle("error", errors.length > 0);
+  await loadTracks();
+  fitMap();
+}
+
+const drop = document.getElementById("drop");
+const fileInput = document.getElementById("gpx-file");
+fileInput.addEventListener("change", () => { upload([...fileInput.files]); fileInput.value = ""; });
+["dragenter", "dragover"].forEach(t => drop.addEventListener(t, ev => { ev.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(t => drop.addEventListener(t, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", ev => upload([...ev.dataTransfer.files].filter(f => /\.gpx$/i.test(f.name) || f.type.includes("gpx"))));
+
+document.getElementById("tracks").addEventListener("click", async (ev) => {
+  const el = ev.target.closest("[data-action]");
+  if (!el) return;
+  const li = el.closest("li");
+  const t = tracks.find(x => x.id === li.dataset.id);
+  const action = el.dataset.action;
+  if (action === "tick") { setTicked(t.id, el.checked); drawTracks(); return; }
+  ev.preventDefault();
+  try {
+    if (action === "zoom" && t.line.length) map.fitBounds(L.latLngBounds(t.line), { padding: [30, 30] });
+    if (action === "use" && t.start) {
+      form.elements.start.value = toLocalInput(t.start);
+      form.elements.end.value = toLocalInput(t.end);
+    }
+    if (action === "rename") {
+      const name = prompt("Name of the track:", t.name);
+      if (name) { await api("PUT", `/api/tracks/${t.id}`, { name }); await loadTracks(); }
+    }
+    if (action === "delete" && confirm(`Delete the track “${t.name}”? Photos are not affected.`)) {
+      await api("DELETE", `/api/tracks/${t.id}`);
+      await loadTracks();
+    }
+    if (action === "retime") { t.needs_times = true; renderTracks(); }
+    if (action === "times") {
+      const start = li.querySelector("[data-role=start]").value;
+      const end = li.querySelector("[data-role=end]").value;
+      await api("PUT", `/api/tracks/${t.id}`, { start, end, timezone: cameraTz() });
+      await loadTracks();
+    }
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+// --- finding -------------------------------------------------------------------------------
+
+const PREF_FIELDS = ["camera_tz", "offset", "tolerance_min", "max_gap_min", "nearby_min", "use_photo_tz",
+  "use_nearby", "use_siblings", "use_tracks"];
+
+function restoreForm() {
+  const prefs = loadPrefs();
+  for (const name of PREF_FIELDS) {
+    const el = form.elements[name];
+    if (!el || prefs[name] === undefined) continue;
+    if (el.type === "checkbox") el.checked = Boolean(prefs[name]); else el.value = prefs[name];
+  }
+  if (!form.elements.camera_tz.value) form.elements.camera_tz.value = app.dataset.tz || "UTC";
+}
+
+function formRequest() {
+  const f = form.elements;
+  const offset = parseOffset(f.offset.value);
+  if (Number.isNaN(offset)) throw new Error("Write the clock offset like +1:00:00, -0:30 or 90 (minutes).");
+  savePrefs(Object.fromEntries(PREF_FIELDS.map(n => [n, f[n].type === "checkbox" ? f[n].checked : f[n].value])));
+  return {
+    track_ids: tracks.filter(t => isTicked(t.id)).map(t => t.id),
+    use_tracks: f.use_tracks.checked,
+    start: f.start.value || null,
+    end: f.end.value || null,
+    album_id: f.album_id.value || null,
+    camera_tz: cameraTz(),
+    use_photo_tz: f.use_photo_tz.checked,
+    offset_s: offset,
+    tolerance_min: Number(f.tolerance_min.value || 0),
+    max_gap_min: Number(f.max_gap_min.value || 0),
+    use_nearby: f.use_nearby.checked,
+    nearby_min: Number(f.nearby_min.value || 0),
+    use_siblings: f.use_siblings.checked,
+  };
+}
+
+async function find() {
+  const errEl = document.getElementById("find-error");
+  errEl.hidden = true;
+  try {
+    const body = formRequest();
+    const pending = items.filter(it => it.status === "ok").length;
+    if (pending && !confirm(`${pending} suggestions have not been written yet. Replace them with a new search?`)) return;
+    const job = await api("POST", "/api/geo/find", body);
+    await followJob(job, document.getElementById("find-job"), "Searching photos");
+    selected.clear();
+    await loadSuggestions();
+    items.filter(it => it.status === "ok").forEach(it => selected.add(it.id));
+    render();
+    fitMap();
+    review.scrollIntoView({ behavior: "smooth" });
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.hidden = false;
+  }
+}
+
+form.addEventListener("submit", ev => { ev.preventDefault(); find(); });
+
+// --- review --------------------------------------------------------------------------------
+
+function visibleItems() {
+  const cam = cameraFilter.value;
+  return items.filter(it => !cam || it.camera === cam);
+}
+
+function visibleSelectedIds() {
+  return visibleItems().filter(it => selected.has(it.id)).map(it => it.id);
+}
+
+function suggestionHtml(it) {
+  if (it.status !== "ok") return `<div class="badge problem">No suggestion: ${esc(it.reason || "")}</div>`;
+  let detail = "";
+  if (it.source === "gpx") {
+    detail = `${esc(it.detail)} · ${it.method === "interpolated" ? "on the track"
+      : `${fmtDiff(it.time_diff_s)} from the nearest track point`}`;
+  } else if (it.source === "sibling") {
+    detail = `copied from ${esc(it.detail)}`;
+  } else if (it.source === "nearby") {
+    detail = `${esc(it.detail)}, ${fmtDiff(it.time_diff_s)} apart`;
+  } else {
+    detail = "your choice";
+  }
+  const ele = it.ele !== null && it.ele !== undefined ? ` · ${Math.round(it.ele)} m` : "";
+  return `<div class="badge suggest src-${esc(it.source)}">
+      <div><strong>${esc(SOURCE_LABEL[it.source] || it.source)}</strong> · <span class="conf-${esc(it.confidence)}">${esc(it.confidence)} confidence</span></div>
+      <div>${detail}</div>
+      <div class="muted">${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}${ele}</div>
+    </div>`;
+}
+
+function render() {
+  review.hidden = !run;
+  if (!run) { grid.innerHTML = ""; return; }
+
+  const opts = run.options || {};
+  const src = Object.entries(run.sources || {}).map(([k, v]) => `${v} from ${SOURCE_LABEL[k] || k}`).join(", ");
+  document.getElementById("run-summary").innerHTML =
+    `Search of ${esc(fmtInstant(run.created_at))}: ${run.searched} photos looked at, ${run.with_location} already had a location, ` +
+    `${run.candidates} without one in the time span, <strong>${run.suggested} with a suggestion</strong>${src ? ` (${esc(src)})` : ""}.` +
+    (opts.offset_s ? ` Clock offset ${esc(formatOffset(opts.offset_s))}.` : "") +
+    (items.length < run.candidates ? ` ${run.candidates - items.length} already written or discarded.` : "");
+
+  const hint = document.getElementById("hint");
+  if (run.hint) {
+    const h = run.hint;
+    const newOffset = (opts.offset_s || 0) + h.hours * 3600;
+    hint.innerHTML = `Only ${h.current} photo${h.current === 1 ? "" : "s"} fit the tracks in time, but ${h.matches} would with the
+      clock shifted by <strong>${h.hours > 0 ? "+" : ""}${h.hours} h</strong>.
+      If the <em>camera time zone</em> above is wrong, correct it and search again.
+      If the camera's clock itself was off (e.g. still on winter time):
+      <button type="button" id="use-hint" data-offset="${newOffset}">Search again with offset ${esc(formatOffset(newOffset))}</button>`;
+    hint.hidden = false;
+  } else {
+    hint.hidden = true;
+  }
+  document.getElementById("fix-time-opt").hidden = !opts.offset_s;
+
+  const cams = [...new Set(items.map(it => it.camera).filter(Boolean))].sort();
+  const current = cameraFilter.value;
+  cameraFilter.innerHTML = `<option value="">All cameras</option>` +
+    cams.map(c => `<option value="${esc(c)}"${c === current ? " selected" : ""}>${esc(c)}</option>`).join("");
+
+  const shown = visibleItems();
+  if (!shown.length) {
+    grid.innerHTML = `<p class="muted">${items.length ? "No photos of this camera." : "No photos without a location in this time span."}</p>`;
+  } else {
+    grid.innerHTML = shown.map(it => `
+      <article class="card ${selected.has(it.id) ? "selected" : ""}" data-id="${esc(it.id)}">
+        <img src="/thumb/${esc(it.id)}" alt="" loading="lazy">
+        <span class="check"></span>
+        <a class="open" href="${esc(immichUrl)}/photos/${esc(it.id)}" target="_blank" rel="noopener" title="Open in Immich">↗</a>
+        <div class="body">
+          <div class="file" title="${esc(it.file_name)}">${esc(it.file_name)}</div>
+          <div class="muted">${esc(fmtLocal(it.local))}${it.camera ? ` · ${esc(it.camera)}` : ""}</div>
+          ${it.corrected ? `<div class="muted">Real time: ${esc(fmtLocal(it.corrected))}</div>` : ""}
+          ${suggestionHtml(it)}
+        </div>
+      </article>`).join("");
+  }
+  drawSuggestions();
+  updateSelection();
+}
+
+function updateSelection() {
+  const ids = visibleSelectedIds();
+  const ok = items.filter(it => ids.includes(it.id) && it.status === "ok").length;
+  selCount.textContent = `${ids.length} of ${visibleItems().length} selected`;
+  applyBtn.disabled = !ok;
+  applyBtn.textContent = ok ? `Write ${ok} location${ok === 1 ? "" : "s"}` : "Write locations";
+  placeBtn.disabled = !ids.length;
+  discardBtn.disabled = !ids.length;
+  for (const card of grid.querySelectorAll(".card")) card.classList.toggle("selected", selected.has(card.dataset.id));
+  for (const [id, m] of markers) {
+    const sel = selected.has(id);
+    m.setStyle({ radius: sel ? 9 : 6, color: sel ? "#000" : "#fff" });
+  }
+}
+
+function toggle(id) {
+  selected.has(id) ? selected.delete(id) : selected.add(id);
+  updateSelection();
+}
+
+async function loadSuggestions() {
+  const data = await api("GET", "/api/geo/suggestions");
+  run = data.run;
+  items = data.items;
+  const ids = new Set(items.map(it => it.id));
+  for (const id of [...selected]) if (!ids.has(id)) selected.delete(id);
+  render();
+}
+
+grid.addEventListener("click", (ev) => {
+  if (ev.target.closest("a")) return;
+  const card = ev.target.closest(".card");
+  if (!card) return;
+  toggle(card.dataset.id);
+  const m = markers.get(card.dataset.id);
+  if (m) map.panTo(m.getLatLng());
+});
+
+document.querySelectorAll("[data-select]").forEach(btn => btn.addEventListener("click", () => {
+  const mode = btn.dataset.select;
+  selected.clear();
+  for (const it of visibleItems()) {
+    if (mode === "all" || (mode === "ok" && it.status === "ok") || (mode === "no_match" && it.status !== "ok")
+        || (mode === "high" && it.status === "ok" && it.confidence === "high")) {
+      selected.add(it.id);
+    }
+  }
+  updateSelection();
+}));
+
+cameraFilter.addEventListener("change", render);
+
+document.getElementById("hint").addEventListener("click", (ev) => {
+  const btn = ev.target.closest("#use-hint");
+  if (!btn) return;
+  form.elements.offset.value = formatOffset(Number(btn.dataset.offset));
+  find();
+});
+
+placeBtn.addEventListener("click", () => setPlacing(!placing));
+
+discardBtn.addEventListener("click", async () => {
+  const ids = visibleSelectedIds();
+  if (!confirm(`Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the suggestions? Nothing changes in Immich.`)) return;
+  await api("POST", "/api/geo/discard", { asset_ids: ids });
+  await loadSuggestions();
+});
+
+applyBtn.addEventListener("click", async () => {
+  const ids = visibleSelectedIds().filter(id => items.find(it => it.id === id).status === "ok");
+  const fixTime = !document.getElementById("fix-time-opt").hidden && document.getElementById("fix-time").checked;
+  const msg = `Write the location of ${ids.length} photo${ids.length === 1 ? "" : "s"} to Immich?` +
+    (fixTime ? `\n\nTheir capture times are corrected by ${formatOffset(run.options.offset_s)} as well (this part can be undone in History).` : "") +
+    "\n\nImmich can change a location later, but cannot remove it again.";
+  if (!confirm(msg)) return;
+  const resultEl = document.getElementById("apply-result");
+  resultEl.hidden = true;
+  try {
+    const job = await api("POST", "/api/geo/apply", { asset_ids: ids, fix_time: fixTime });
+    const r = await followJob(job, document.getElementById("apply-job"), "Writing locations");
+    resultEl.textContent = `Wrote ${r.written} location${r.written === 1 ? "" : "s"}` +
+      (r.times_fixed ? `, corrected ${r.times_fixed} time${r.times_fixed === 1 ? "" : "s"}` : "") + ". Immich updates the place names in the background.";
+    resultEl.hidden = false;
+    await loadSuggestions();
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+// --- start ---------------------------------------------------------------------------------
+
+try {
+  document.getElementById("timezones").innerHTML =
+    Intl.supportedValuesOf("timeZone").map(z => `<option value="${esc(z)}">`).join("");
+} catch (e) { /* older browsers: free text only */ }
+
+restoreForm();
+form.elements.camera_tz.addEventListener("change", renderTracks);
+Promise.all([loadTracks(), loadSuggestions()]).then(fitMap).catch(e => {
+  document.getElementById("tracks").innerHTML = `<li class="notice error">${esc(e.message)}</li>`;
+});

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block content %}
+{% if error %}
+  <div class="notice error"><strong>Cannot reach Immich.</strong> {{ error }}</div>
+{% endif %}
+
+<section class="intro">
+  <div class="section-head">
+    <h1>Better metadata for your Immich library</h1>
+    {% if version %}<span class="muted">Immich {{ version }}</span>{% endif %}
+  </div>
+  <p class="muted">The tool only <em>suggests</em> dates and locations. Nothing is written to Immich until you
+    review the suggestions and click a write button. Every change is logged under <a href="/history">History</a>.</p>
+</section>
+
+<section class="tiles">
+  <a class="tile" href="/dates">
+    <h2>📅 Dates</h2>
+    <p>Pick an album. Write a date you know (a year is enough), estimate it from the ages of the people in
+      the photos, or read it from file names like <code>IMG-20190713-WA0001.jpg</code>.</p>
+    <span class="muted">Age model {% if calibration.calibrated %}calibrated on {{ calibration.samples }} faces{% else %}not calibrated yet{% endif %}</span>
+  </a>
+  <a class="tile" href="/locations">
+    <h2>📍 Locations</h2>
+    <p>Upload GPX tracks (Komoot, Strava, Garmin …) and give photos without a location the position
+      you were at when they were taken. Nearby phone photos and same-name files (HDR, edits) help too.</p>
+    <span class="muted">{{ tracks }} track{{ "" if tracks == 1 else "s" }} uploaded{% if geo_pending %} · {{ geo_pending }} suggestion{{ "" if geo_pending == 1 else "s" }} waiting for review{% endif %}</span>
+  </a>
+  <a class="tile" href="/people">
+    <h2>👪 People &amp; birthdays</h2>
+    <p>Birthdays of the people named in Immich. Needed to date photos from faces.</p>
+  </a>
+  <a class="tile" href="/history">
+    <h2>🕘 History</h2>
+    <p>Everything written to Immich, with the previous values. Date changes can be undone.</p>
+  </a>
+</section>
+
+{% if batches %}
+<section>
+  <h2>Recent changes</h2>
+  <ul class="recent">
+    {% for b in batches %}
+    <li><span class="muted">{{ b.created_at.replace("T", " ") }}</span> {{ b.label }} · {{ b.count }} photo{{ "" if b.count == 1 else "s" }}{% if b.undone_at %} <span class="muted">(undone)</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

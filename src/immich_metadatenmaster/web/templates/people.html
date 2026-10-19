@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}People &amp; birthdays{% endblock %}
+{% block content %}
+<section>
+  <h1>People &amp; birthdays</h1>
+  <p class="muted">Only named people from Immich are listed. A birthday is needed for someone's face to date a photo. Changes are saved to Immich immediately.</p>
+  <div class="row">
+    <input id="filter" type="search" placeholder="Filter by name">
+    <label><input id="missing-only" type="checkbox"> Only without birthday</label>
+  </div>
+  <table class="people">
+    <thead><tr><th></th><th>Name</th><th>Birthday</th><th></th></tr></thead>
+    <tbody id="people"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+  </table>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='common.js') }}"></script>
+<script src="{{ url_for('static', path='people.js') }}"></script>{% endblock %}

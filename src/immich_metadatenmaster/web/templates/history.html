@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+{% block content %}
+<section id="app" data-immich="{{ immich_url }}">
+  <h1>History</h1>
+  <p class="muted">Everything this tool wrote to Immich, newest first, with the values from before.
+    Date changes can be undone: the photos get their previous date back. Immich's API cannot remove a
+    location again, so a location can only be undone if the photo had a different one before.</p>
+  <div id="job" class="job" hidden></div>
+  <div id="result" class="job-result" hidden></div>
+  <table class="history">
+    <thead><tr><th>When</th><th>What</th><th>Photos</th><th></th></tr></thead>
+    <tbody id="batches"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+  </table>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='common.js') }}"></script>
+<script src="{{ url_for('static', path='history.js') }}"></script>{% endblock %}
