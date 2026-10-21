@@ -69,6 +69,11 @@ CREATE TABLE IF NOT EXISTS change (
     new TEXT NOT NULL,             -- JSON: what was written
     PRIMARY KEY (batch_id, asset_id)
 );
+CREATE TABLE IF NOT EXISTS no_location (
+    asset_id TEXT PRIMARY KEY,     -- marked by the user: a location makes no sense (screenshots, ...)
+    file_name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -276,6 +281,24 @@ class Store:
     def mark_undone(self, batch_id: int) -> None:
         with self._lock, self._db:
             self._db.execute("UPDATE change_batch SET undone_at = ? WHERE id = ?", (_now(), batch_id))
+
+    # --- photos that need no location -------------------------------------------------------
+
+    def mark_no_location(self, items: dict[str, str]) -> None:
+        """Mark assets (id -> file name) as not needing a location."""
+        with self._lock, self._db:
+            self._db.executemany("INSERT OR REPLACE INTO no_location VALUES (?, ?, ?)",
+                                 [(aid, name, _now()) for aid, name in items.items()])
+
+    def unmark_no_location(self, asset_ids: list[str]) -> None:
+        with self._lock, self._db:
+            self._db.executemany("DELETE FROM no_location WHERE asset_id = ?", [(a,) for a in asset_ids])
+
+    def no_location(self) -> list[dict[str, str]]:
+        with self._lock:
+            rows = self._db.execute("SELECT asset_id, file_name, created_at FROM no_location "
+                                    "ORDER BY created_at DESC, file_name").fetchall()
+        return [{"id": r[0], "file_name": r[1], "created_at": r[2]} for r in rows]
 
     # --- small values -----------------------------------------------------------------------
 

@@ -4,8 +4,8 @@
 <section id="app" data-immich="{{ immich_url }}">
   <h1>History</h1>
   <p class="muted">Everything this tool wrote to Immich, newest first, with the values from before.
-    Date changes can be undone: the photos get their previous date back. Immich's API cannot remove a
-    location again, so a location can only be undone if the photo had a different one before.</p>
+    <strong>Undo</strong> puts the previous dates or locations back and removes the tag. Photos that were
+    changed in Immich in the meantime are left alone.</p>
   <div id="job" class="job" hidden></div>
   <div id="result" class="job-result" hidden></div>
   <table class="history">

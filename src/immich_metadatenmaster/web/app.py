@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ..config import ENV_NAMES, Settings, env_overrides
 from ..dates import parse_date_spec, parse_year_bound
+from ..geocode import GeocodeError, search as geocode_search
 from ..geotag import GeoOptions, GeoTagger
 from ..gpx import MAX_GPX_BYTES, GpxError
 from ..immich import ImmichClient, ImmichError
@@ -98,12 +99,14 @@ class GeoRequest(BaseModel):
     use_nearby: bool = True
     nearby_min: float = Field(default=10, ge=0, le=24 * 60)
     use_siblings: bool = True
+    include_located: bool = False
 
 
 class PlaceRequest(BaseModel):
     asset_ids: list[str] = Field(min_length=1)
     lat: float = Field(ge=-90, le=90)
     lon: float = Field(ge=-180, le=180)
+    label: str = ""
 
 
 class GeoApplyRequest(BaseModel):
@@ -168,7 +171,8 @@ def _client(settings: Settings) -> ImmichClient:
 
 def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None = None,
                build: Callable[[Settings], AgeGuesser] = build_guesser,
-               make_client: Callable[[Settings], ImmichClient] = _client) -> FastAPI:
+               make_client: Callable[[Settings], ImmichClient] = _client,
+               geocode_transport: Any = None) -> FastAPI:
     if settings is None:
         settings = guesser.settings if guesser is not None else Settings.load()
     runtime = Runtime(settings, build, guesser)
@@ -242,7 +246,8 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         albums, _, error = albums_or_error(guesser)
         s = guesser.settings
         return page(request, "locations.html", albums=albums, error=error, timezone=s.timezone,
-                    tile_url=s.map_tile_url, attribution=s.map_attribution, immich_url=s.public_url)
+                    tile_url=s.map_tile_url, attribution=s.map_attribution, immich_url=s.public_url,
+                    geocoder=bool(s.geocoder_url))
 
     @app.get("/history", response_class=HTMLResponse, dependencies=[Depends(setup_redirect)])
     def history_page(request: Request) -> Response:
@@ -522,7 +527,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
                 end=_local(body.end, tz), album_id=body.album_id or None, camera_tz=tz_name,
                 use_photo_tz=body.use_photo_tz, offset_s=body.offset_s, tolerance_min=body.tolerance_min,
                 max_gap_min=body.max_gap_min, use_nearby=body.use_nearby, nearby_min=body.nearby_min,
-                use_siblings=body.use_siblings)
+                use_siblings=body.use_siblings, include_located=body.include_located)
         except ValueError as exc:
             raise bad_request(exc) from exc
         if bool(opts.start) != bool(opts.end):
@@ -538,7 +543,34 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
 
     @app.post("/api/geo/place")
     def geo_place(body: PlaceRequest) -> dict[str, Any]:
-        return {"placed": geo().place(body.asset_ids, body.lat, body.lon)}
+        try:
+            return {"placed": geo().place(body.asset_ids, body.lat, body.lon, body.label)}
+        except ValueError as exc:
+            raise bad_request(exc) from exc
+
+    @app.get("/api/geocode")
+    def geocode(q: str, lang: str | None = None, lat: float | None = None, lon: float | None = None
+                ) -> dict[str, Any]:
+        near = (lat, lon) if lat is not None and lon is not None else None
+        try:
+            results = geocode_search(g().settings.geocoder_url, q, lang=lang, near=near,
+                                     transport=geocode_transport)
+        except GeocodeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {"results": results}
+
+    @app.get("/api/geo/no-location")
+    def list_no_location() -> list[dict[str, str]]:
+        return geo().no_location()
+
+    @app.post("/api/geo/no-location")
+    def mark_no_location(body: AssetIds) -> dict[str, Any]:
+        return {"marked": geo().mark_no_location(body.asset_ids)}
+
+    @app.post("/api/geo/no-location/remove")
+    def unmark_no_location(body: AssetIds) -> dict[str, Any]:
+        geo().unmark_no_location(body.asset_ids)
+        return {"unmarked": len(body.asset_ids)}
 
     @app.post("/api/geo/discard")
     def geo_discard(body: AssetIds) -> dict[str, Any]:

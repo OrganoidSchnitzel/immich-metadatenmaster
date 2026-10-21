@@ -3,7 +3,7 @@
 {% block head %}<link rel="stylesheet" href="{{ url_for('static', path='vendor/leaflet/leaflet.css') }}">{% endblock %}
 {% block content %}
 <div id="app" data-tz="{{ timezone }}" data-tiles="{{ tile_url }}" data-attribution="{{ attribution }}"
-     data-immich="{{ immich_url }}">
+     data-immich="{{ immich_url }}" data-geocoder="{{ 'on' if geocoder else '' }}">
   {% if error %}<div class="notice error"><strong>Cannot reach Immich.</strong> {{ error }}</div>{% endif %}
   <div class="section-head">
     <h1>Locations</h1>
@@ -40,6 +40,10 @@
               {% for a in albums %}<option value="{{ a.id }}">{{ a.albumName }}</option>{% endfor %}
             </select>
           </label>
+          <small class="muted">An album alone (no ticked track, no time range) means all its photos: handy for
+            placing old photos with the address search.</small>
+          <label class="check"><input type="checkbox" name="include_located"> Also list photos that already have a
+            location (to correct a wrong one)</label>
           <details open>
             <summary>Camera clock</summary>
             <label>Camera time zone <input name="camera_tz" list="timezones" placeholder="Europe/Berlin"></label>
@@ -96,6 +100,7 @@
       <button type="button" data-select="ok">With suggestion</button>
       <button type="button" data-select="high">High confidence</button>
       <button type="button" data-select="no_match">Without suggestion</button>
+      <button type="button" data-select="screenshot" title="Screenshots and graphics (PNG etc. without camera)">Screenshots</button>
       <select id="camera-filter" title="Show only photos of one camera"><option value="">All cameras</option></select>
     </div>
     <div class="row">
@@ -103,13 +108,24 @@
       <label class="check" id="fix-time-opt" hidden title="Only if the camera's clock was wrong, not if just the time zone above was"><input type="checkbox" id="fix-time"> Also correct the photo times by the clock offset</label>
       <button type="button" id="geo-place" disabled>Place selected on the map…</button>
       <button type="button" id="geo-discard" disabled>Discard</button>
+      <button type="button" id="geo-no-location" disabled title="Screenshots, documents …: never suggest a location for them again">No location needed</button>
     </div>
+    <p class="muted search-tip">Tip: select photos, then search a place in the box on the map and click
+      <em>Place here</em>, or click <em>Place selected on the map…</em> and click the spot.</p>
     <div id="apply-job" class="job" hidden></div>
     <div id="apply-result" class="job-result" hidden></div>
   </section>
 
   <section>
     <div id="geo-grid" class="grid"></div>
+  </section>
+
+  <section>
+    <details id="no-location-box">
+      <summary>Photos marked “no location needed” (<span id="no-location-count">0</span>)</summary>
+      <p class="muted">Searches skip these photos. Nothing is stored in Immich for them.</p>
+      <ul id="no-location-list" class="no-location-list"></ul>
+    </details>
   </section>
 </div>
 {% endblock %}

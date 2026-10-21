@@ -186,8 +186,7 @@ def test_locations_flow(client, fake):
     assert client.get("/api/geo/suggestions").json()["items"] == []
 
     history = client.get("/api/history").json()
-    assert {h["source"] for h in history} == {"gpx", "map"} and not any(h["undoable"] for h in history)
-    assert client.post(f"/api/history/{history[0]['id']}/undo").status_code == 400
+    assert {h["source"] for h in history} == {"gpx", "map"} and all(h["undoable"] for h in history)
 
     assert client.delete(f"/api/tracks/{track_id}").status_code == 200
     assert client.get("/api/tracks").json() == []
@@ -197,7 +196,7 @@ def test_geo_find_validation(client):
     assert client.post("/api/geo/find", json={"camera_tz": "Mars/Base"}).status_code == 400
     assert client.post("/api/geo/find", json={"start": "2024-07-01T08:00"}).status_code == 400
     job = wait(client, client.post("/api/geo/find", json={}).json())  # no tracks, no range
-    assert job["status"] == "failed" and "Select at least one" in job["error"]
+    assert job["status"] == "failed" and "Select a GPX track" in job["error"]
 
 
 def test_untimed_track_times_via_web(client):
@@ -219,6 +218,39 @@ def test_undo_via_web(client, batch, fake):
     details = client.get(f"/api/history/{history[0]['id']}").json()
     assert details["changes"][0]["file_name"] == "b.jpg"
     job = wait(client, client.post(f"/api/history/{history[0]['id']}/undo").json())
-    assert job["result"] == {"restored": 1, "skipped": 0}
+    assert job["result"] == {"restored": 1, "skipped": 0, "changed": 0, "failed": 0}
     assert fake.assets[batch["ids"][0]].exif_date.startswith("2026-09-01T10:00")
     assert client.get("/api/history").json()[0]["undone_at"]
+    assert client.post(f"/api/history/{history[0]['id']}/undo").status_code == 400
+
+
+def test_geocode_endpoint(guesser):
+    import httpx
+    photon = httpx.MockTransport(lambda r: httpx.Response(200, json={"features": [
+        {"geometry": {"coordinates": [10.9853, 47.4211]},
+         "properties": {"name": "Zugspitze", "country": "Deutschland"}}]}))
+    with TestClient(create_app(guesser, geocode_transport=photon), headers={"X-Metadatenmaster": "1"}) as c:
+        r = c.get("/api/geocode", params={"q": "Zugspitze", "lang": "de"}).json()
+        assert r["results"][0]["name"] == "Zugspitze" and r["results"][0]["lat"] == 47.4211
+        assert c.get("/api/geocode", params={"q": "1.5, 2.5"}).json()["results"][0]["lon"] == 2.5
+    down = httpx.MockTransport(lambda r: httpx.Response(500))
+    with TestClient(create_app(guesser, geocode_transport=down), headers={"X-Metadatenmaster": "1"}) as c:
+        assert c.get("/api/geocode", params={"q": "Zugspitze"}).status_code == 502
+
+
+def test_no_location_and_album_scope_via_web(client, fake):
+    shot = fake.add_photo("Screenshot_1.png", "2024-07-01T15:00:00", make="", model="", album="phone")
+    photo = fake.add_photo("IMG_1.jpg", "2024-07-01T15:00:00", album="phone")
+    job = wait(client, client.post("/api/geo/find", json={"use_tracks": False, "album_id": "phone"}).json())
+    assert job["status"] == "done" and job["result"]["whole_album"]
+    items = {i["id"]: i for i in client.get("/api/geo/suggestions").json()["items"]}
+    assert items[shot]["screenshot"] and set(items) == {shot, photo}
+
+    assert client.post("/api/geo/no-location", json={"asset_ids": [shot]}).json() == {"marked": 1}
+    assert [x["id"] for x in client.get("/api/geo/no-location").json()] == [shot]
+    assert client.post("/api/geo/place", json={"asset_ids": [photo], "lat": 0, "lon": 0}).status_code == 400
+    r = client.post("/api/geo/place", json={"asset_ids": [photo], "lat": 48.1, "lon": 11.5, "label": "München"})
+    assert r.json() == {"placed": 1}
+    assert client.get("/api/geo/suggestions").json()["items"][0]["detail"] == "München"
+    client.post("/api/geo/no-location/remove", json={"asset_ids": [shot]})
+    assert client.get("/api/geo/no-location").json() == []

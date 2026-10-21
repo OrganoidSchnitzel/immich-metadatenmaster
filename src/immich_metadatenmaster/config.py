@@ -31,10 +31,11 @@ ENV_NAMES = {
     "use_original_for_small_faces": "USE_ORIGINAL_FOR_SMALL_FACES",
     "map_tile_url": "MAP_TILE_URL",
     "map_attribution": "MAP_ATTRIBUTION",
+    "geocoder_url": "GEOCODER_URL",
 }
 
 # Text settings for which "" is a real value; for the others "" means "use the default".
-_EMPTY_ALLOWED = {"immich_url", "immich_api_key", "immich_public_url", "tag_root", "map_attribution"}
+_EMPTY_ALLOWED = {"immich_url", "immich_api_key", "immich_public_url", "tag_root", "map_attribution", "geocoder_url"}
 
 ESTIMATORS = ("mivolo", "ollama")
 DATE_ANCHORS = ("middle", "start")
@@ -76,6 +77,8 @@ class Settings:
     # Background map of the location pages (any XYZ tile server).
     map_tile_url: str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
     map_attribution: str = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    # Address search on the map (a Photon geocoder). Empty switches it off.
+    geocoder_url: str = "https://photon.komoot.io"
 
     @property
     def configured(self) -> bool:
@@ -150,6 +153,8 @@ class Settings:
             raise ValueError("The minimum face size must be positive.")
         if not self.map_tile_url.startswith(("http://", "https://", "/")):
             raise ValueError("The map tile URL must start with http:// or https://.")
+        if self.geocoder_url and not self.geocoder_url.startswith(("http://", "https://")):
+            raise ValueError("The address search URL must start with http:// or https://.")
 
     def save(self, exclude: set[str] = frozenset()) -> None:
         """Write the settings to config.json (owner-readable only: it holds the API key).

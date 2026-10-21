@@ -1,6 +1,6 @@
 """Locations for photos without one: from GPX tracks, from nearby photos that have a location, and from
-other versions of the same photo (e.g. the HDR merge of a RAW file). Nothing is written to Immich until
-the user accepts the suggestions."""
+other versions of the same photo (e.g. the HDR merge of a RAW file), or placed by the user on the map.
+Nothing is written to Immich until the user accepts the suggestions."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from .config import Settings
-from .gpx import ParsedGpx, Track, TrackPoint, parse_gpx, simplify, total_distance_m, with_times
+from .gpx import ParsedGpx, Track, TrackPoint, distance_m, parse_gpx, simplify, total_distance_m, with_times
 from .history import History, iana_name, zone_of
 from .immich import Asset, ImmichClient
 from .service import tag_assets
@@ -31,6 +31,11 @@ MAX_ASSETS = 20_000
 # off by up to this much; searches are widened accordingly and the exact time is computed here.
 _TZ_SLACK = timedelta(hours=14)
 _SIBLING_WINDOW = timedelta(hours=12)
+# Faster than this between the photos before and after means a wrong clock or a flight: no interpolation.
+MAX_SPEED_M_S = 70.0
+_SCREENSHOT = re.compile(r"screenshot|screen ?shot|bildschirmfoto|bildschirmaufnahme|capture d.[ée]cran|"
+                         r"schermafbeelding|captura de pantalla|scrnli|^svid_", re.I)
+_GRAPHIC_EXT = (".png", ".gif", ".webp", ".bmp", ".svg")
 _SUFFIX = re.compile(r"(?:[-_ ](?:hdr|pano|edit|edited|bearbeitet|enhanced(?:-nr|-sr)?|denoise|dxo|nr|lr|"
                      r"export|copy|kopie|\d{1,2}))+$", re.I)
 
@@ -64,6 +69,8 @@ class GeoOptions:
     use_nearby: bool = True
     nearby_min: float = 10
     use_siblings: bool = True
+    # Also list photos that already have a location (to correct a wrong one on the map).
+    include_located: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {**{k: v for k, v in self.__dict__.items() if k not in {"start", "end"}},
@@ -73,8 +80,16 @@ class GeoOptions:
 
 @dataclass
 class _Located:
+    """Photos with a location, sorted by time (unix seconds)."""
+
     instants: list[float] = field(default_factory=list)
     assets: list[Asset] = field(default_factory=list)
+
+
+def looks_like_screenshot(asset: Asset) -> bool:
+    """Screenshots and graphics, which usually need no location."""
+    name = asset.file_name.lower()
+    return bool(_SCREENSHOT.search(name)) or (name.endswith(_GRAPHIC_EXT) and not asset.camera)
 
 
 def sibling_key(file_name: str) -> str:
@@ -92,12 +107,16 @@ def photo_instant(asset: Asset, camera_tz: ZoneInfo, use_photo_tz: bool) -> date
     return asset.taken_at
 
 
-def _confidence(source: str, time_diff_s: float) -> str:
+def _confidence(match: dict[str, Any]) -> str:
+    source, diff = match["source"], match["time_diff_s"]
     if source in {"sibling", "map"}:
         return "high"
     if source == "gpx":
-        return "high" if time_diff_s <= 120 else "medium" if time_diff_s <= 600 else "low"
-    return "medium" if time_diff_s <= 300 else "low"
+        return "high" if diff <= 120 else "medium" if diff <= 600 else "low"
+    # Nearby photos: the same camera shares the clock; another camera's clock may be off.
+    if match.get("same_camera"):
+        return "high" if diff <= 120 else "medium" if diff <= 600 else "low"
+    return "medium" if diff <= 300 else "low"
 
 
 def _merge(windows: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
@@ -206,13 +225,17 @@ class GeoTagger:
             if opts.end <= opts.start:
                 raise ValueError("The end of the time range is before its start.")
             scopes.append((opts.start, opts.end))
-        if not scopes:
-            raise ValueError("Select at least one GPX track with times, or enter a time range.")
+        whole_album = not scopes and bool(opts.album_id)
+        if not scopes and not whole_album:
+            raise ValueError("Select a GPX track with times, enter a time range, or choose an album.")
         scopes = _merge(scopes)
         slack = _TZ_SLACK + abs(offset) + tol + timedelta(minutes=opts.nearby_min)
         fetch = _merge([(a - slack, b + slack) for a, b in scopes])
 
         assets: dict[str, Asset] = {}
+        if whole_album:
+            assets = {a.id: a for a in self.immich.album_all_assets(opts.album_id)}  # type: ignore[arg-type]
+            progress(1, 1)
         for i, (a, b) in enumerate(fetch):
             for asset in self.immich.assets_taken_between(a, b, opts.album_id):
                 assets[asset.id] = asset
@@ -220,13 +243,17 @@ class GeoTagger:
                 raise ValueError(f"More than {MAX_ASSETS} photos in this time span. Select fewer tracks "
                                  "or a shorter range.")
             progress(i + 1, len(fetch))
+        if len(assets) > MAX_ASSETS:
+            raise ValueError(f"More than {MAX_ASSETS} photos in this album.")
 
         def in_scope(t: datetime) -> bool:
-            return any(a <= t <= b for a, b in scopes)
+            return whole_album or any(a <= t <= b for a, b in scopes)
 
+        skip = {item["id"] for item in self.store.no_location()}
         by_key: dict[str, list[Asset]] = {}
         with_location: list[tuple[float, Asset]] = []
-        unlocated: list[tuple[Asset, datetime]] = []
+        # Unlocated photos with their corrected time and their camera's own clock time.
+        unlocated: list[tuple[Asset, datetime, datetime]] = []
         for a in assets.values():
             t = photo_instant(a, cam_tz, opts.use_photo_tz)
             if t is None:
@@ -234,29 +261,47 @@ class GeoTagger:
             if a.has_location:
                 by_key.setdefault(sibling_key(a.file_name), []).append(a)
                 with_location.append((t.timestamp(), a))
-            else:
-                unlocated.append((a, t + offset))
+            elif a.id not in skip:
+                unlocated.append((a, t + offset, t))
         with_location.sort(key=lambda x: x[0])
         located = _Located([ts for ts, _ in with_location], [a for _, a in with_location])
+        by_camera: dict[str, _Located] = {}
+        for ts, a in with_location:
+            if a.camera:
+                cam = by_camera.setdefault(a.camera, _Located())
+                cam.instants.append(ts)
+                cam.assets.append(a)
 
-        hint = self._shift_hint(unlocated, tracks, tol, max_gap) if tracks else None
-        candidates = sorted(((a, t) for a, t in unlocated if in_scope(t)), key=lambda x: x[1])
+        hint = self._shift_hint([(a, t) for a, t, _ in unlocated], tracks, tol, max_gap) if tracks else None
+        candidates = sorted(((a, t, raw) for a, t, raw in unlocated if in_scope(t)), key=lambda x: x[1])
+        window = timedelta(minutes=opts.nearby_min)
 
         results: dict[str, dict[str, Any]] = {}
         sources: Counter[str] = Counter()
         steps = len(fetch) + len(candidates)
-        for i, (a, t) in enumerate(candidates):
+        for i, (a, t, raw) in enumerate(candidates):
             item = self._base(a, t, opts, cam_tz)
             match = (self._sibling(a, by_key) if opts.use_siblings else None) \
                 or self._on_tracks(t, tracks, tol, max_gap) \
-                or (self._nearby(t, located, timedelta(minutes=opts.nearby_min)) if opts.use_nearby else None)
+                or (self._nearby(a, t, raw, located, by_camera, window) if opts.use_nearby else None)
             if match:
-                item.update(match, status="ok", confidence=_confidence(match["source"], match["time_diff_s"]))
+                item.update(match, status="ok", confidence=_confidence(match))
                 sources[match["source"]] += 1
             else:
                 item.update(status="no_match", reason=self._reason(t, tracks))
             results[a.id] = item
             progress(len(fetch) + i + 1, steps)
+
+        located_listed = 0
+        if opts.include_located:
+            for ts, a in with_location:
+                t = datetime.fromtimestamp(ts, timezone.utc)
+                if a.id in skip or not in_scope(t):
+                    continue
+                item = self._base(a, t, opts, cam_tz)
+                item.update(status="located", current_lat=a.latitude, current_lon=a.longitude)
+                results[a.id] = item
+                located_listed += 1
 
         self.store.save_suggestions(TABLE, results, replace_all=True)
         run = {
@@ -265,6 +310,8 @@ class GeoTagger:
             "track_ids": [tid for tid, _, _ in tracks],
             "searched": len(assets), "with_location": len(located.assets), "candidates": len(candidates),
             "suggested": sum(sources.values()), "sources": dict(sources), "hint": hint,
+            "whole_album": whole_album, "located_listed": located_listed,
+            "no_location_needed": sum(1 for a in assets.values() if a.id in skip),
             "located": [[round(a.latitude, 6), round(a.longitude, 6)] for a in located.assets[:3000]
                         if a.latitude is not None and a.longitude is not None],
         }
@@ -277,6 +324,8 @@ class GeoTagger:
             "local": a.local_datetime.isoformat() if a.local_datetime else None,
             "time_zone": a.time_zone, "instant": t.isoformat(),
         }
+        if looks_like_screenshot(a):
+            item["screenshot"] = True
         if opts.offset_s:
             # The corrected capture time, in the photo's own zone if it has one, else the camera zone.
             own = a.time_zone if opts.use_photo_tz and zone_of(a.time_zone) else None
@@ -316,8 +365,27 @@ class GeoTagger:
                 "ele": round(pos.ele, 1) if pos.ele is not None else None,
                 "detail": name, "ref_id": tid, "time_diff_s": round(pos.time_diff_s), "method": pos.method}
 
+    @classmethod
+    def _nearby(cls, a: Asset, t: datetime, raw: datetime, located: _Located, by_camera: dict[str, _Located],
+                window: timedelta) -> dict[str, Any] | None:
+        """Position from photos with a location taken shortly before/after.
+
+        Photos of the same camera come first: they share its clock, so they are compared by the camera's
+        own time (the clock offset does not matter). Other cameras (e.g. a phone) only count if the same
+        camera has nothing close enough, and give a lower confidence.
+        """
+        same = by_camera.get(a.camera) if a.camera else None
+        match = cls._neighbours(raw, same, window) if same else None
+        if match:
+            match["same_camera"] = True
+            return match
+        match = cls._neighbours(t, located, window)
+        if match:
+            match["same_camera"] = False
+        return match
+
     @staticmethod
-    def _nearby(t: datetime, located: _Located, window: timedelta) -> dict[str, Any] | None:
+    def _neighbours(t: datetime, located: _Located, window: timedelta) -> dict[str, Any] | None:
         if not located.instants:
             return None
         ts, w = t.timestamp(), window.total_seconds()
@@ -328,13 +396,20 @@ class GeoTagger:
             return None
         if before is not None and after is not None and located.instants[after] > located.instants[before]:
             a, b = located.assets[before], located.assets[after]
-            f = (ts - located.instants[before]) / (located.instants[after] - located.instants[before])
-            diff = min(ts - located.instants[before], located.instants[after] - ts)
-            lat = a.latitude + (b.latitude - a.latitude) * f  # type: ignore[operator]
-            lon = a.longitude + (b.longitude - a.longitude) * f  # type: ignore[operator]
-            nearest = a if ts - located.instants[before] <= located.instants[after] - ts else b
-            return {"source": "nearby", "lat": lat, "lon": lon, "ele": None, "detail": nearest.file_name,
-                    "ref_id": nearest.id, "time_diff_s": round(diff), "method": "interpolated"}
+            gap = located.instants[after] - located.instants[before]
+            pa = TrackPoint(a.latitude, a.longitude)  # type: ignore[arg-type]
+            pb = TrackPoint(b.latitude, b.longitude)  # type: ignore[arg-type]
+            if distance_m(pa, pb) / gap <= MAX_SPEED_M_S:
+                f = (ts - located.instants[before]) / gap
+                diff = min(ts - located.instants[before], located.instants[after] - ts)
+                nearest = a if ts - located.instants[before] <= located.instants[after] - ts else b
+                return {"source": "nearby", "lat": pa.lat + (pb.lat - pa.lat) * f,
+                        "lon": pa.lon + (pb.lon - pa.lon) * f, "ele": None, "detail": nearest.file_name,
+                        "ref_id": nearest.id, "time_diff_s": round(diff),
+                        "method": "interpolated"}
+            # Too far apart for the time between them (a wrong clock or a flight): take the nearer one.
+            before, after = (before, None) if ts - located.instants[before] <= located.instants[after] - ts \
+                else (None, after)
         k = before if before is not None else after
         ref = located.assets[k]  # type: ignore[index]
         return {"source": "nearby", "lat": ref.latitude, "lon": ref.longitude, "ele": None, "detail": ref.file_name,
@@ -372,13 +447,15 @@ class GeoTagger:
     def suggestions(self) -> dict[str, dict[str, Any]]:
         return self.store.suggestions(TABLE)
 
-    def place(self, asset_ids: list[str], lat: float, lon: float) -> int:
+    def place(self, asset_ids: list[str], lat: float, lon: float, label: str = "") -> int:
         """Put the given photos at a point chosen on the map (as a suggestion, still to be written)."""
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             raise ValueError("Invalid coordinates.")
+        if lat == 0 and lon == 0:
+            raise ValueError("Immich treats 0, 0 as “no location”. Choose another point.")
         stored = self.store.suggestions(TABLE, asset_ids)
         for item in stored.values():
-            item.update(status="ok", source="map", lat=lat, lon=lon, ele=None, detail="", ref_id=None,
+            item.update(status="ok", source="map", lat=lat, lon=lon, ele=None, detail=label[:200], ref_id=None,
                         time_diff_s=0, method="manual", confidence="high")
             item.pop("reason", None)
         self.store.save_suggestions(TABLE, stored)
@@ -386,6 +463,19 @@ class GeoTagger:
 
     def discard(self, asset_ids: list[str]) -> None:
         self.store.delete_suggestions(TABLE, asset_ids)
+
+    def mark_no_location(self, asset_ids: list[str]) -> int:
+        """Remember that these photos need no location (screenshots, documents …); later searches skip them."""
+        stored = self.store.suggestions(TABLE, asset_ids)
+        self.store.mark_no_location({aid: stored.get(aid, {}).get("file_name", "") for aid in asset_ids})
+        self.store.delete_suggestions(TABLE, asset_ids)
+        return len(asset_ids)
+
+    def unmark_no_location(self, asset_ids: list[str]) -> None:
+        self.store.unmark_no_location(asset_ids)
+
+    def no_location(self) -> list[dict[str, str]]:
+        return self.store.no_location()
 
     def apply(self, asset_ids: list[str], *, fix_time: bool = False, progress: Progress = _noop) -> dict[str, Any]:
         """Write the accepted locations (and, if asked, the clock-corrected times) to Immich."""
@@ -398,6 +488,8 @@ class GeoTagger:
         try:
             for i, aid in enumerate(todo):
                 s = stored[aid]
+                if s["lat"] == 0 and s["lon"] == 0:  # Immich would read it as "no location"
+                    continue
                 self.immich.set_location([aid], s["lat"], s["lon"])
                 name, before = old.get(aid, ("", {}))
                 name = name or s.get("file_name", "")

@@ -18,7 +18,7 @@ function value(kind, v) {
 function status(b) {
   if (b.undone_at) return `<span class="muted">undone ${esc(when(b.undone_at))}</span>`;
   if (b.undoable) return `<button type="button" data-undo="${b.id}">Undo</button>`;
-  return `<span class="muted" title="Immich's API cannot remove a location">cannot be undone</span>`;
+  return `<span class="muted" title="The previous date is unknown">cannot be undone</span>`;
 }
 
 async function load() {
@@ -51,13 +51,19 @@ tbody.addEventListener("click", async (ev) => {
   }
   const undo = ev.target.closest("[data-undo]");
   if (undo) {
-    if (!confirm("Put the previous dates back on these photos?")) return;
+    const row = undo.closest("tr");
+    if (!confirm(`Undo “${row.querySelector("[data-details]").textContent}”? The photos get their previous values back.`)) return;
     const resultEl = document.getElementById("result");
     resultEl.hidden = true;
     try {
       const job = await api("POST", `/api/history/${undo.dataset.undo}/undo`);
       const r = await followJob(job, document.getElementById("job"), "Undoing");
-      resultEl.textContent = `Restored ${r.restored} photo${r.restored === 1 ? "" : "s"}` + (r.skipped ? `, ${r.skipped} skipped` : "") + ".";
+      const parts = [`Restored ${r.restored} photo${r.restored === 1 ? "" : "s"}`];
+      if (r.changed) parts.push(`${r.changed} left alone because they were changed in Immich since`);
+      if (r.failed) parts.push(`${r.failed} could not be cleared by Immich and keep the written location`);
+      if (r.skipped) parts.push(`${r.skipped} skipped (previous value unknown)`);
+      resultEl.textContent = parts.join(" · ") + ".";
+      resultEl.classList.toggle("warn", Boolean(r.changed || r.failed));
       resultEl.hidden = false;
       await load();
     } catch (e) {

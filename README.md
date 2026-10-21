@@ -3,7 +3,7 @@
 Fill in missing metadata in [Immich](https://immich.app): **dates** and **locations**.
 The tool looks at your photos and *suggests* values. Nothing is written to Immich until you have
 reviewed the suggestions and clicked a write button, and every write is logged with the previous
-values (date changes can be undone).
+values and can be undone.
 
 | | Where the suggestion comes from |
 |---|---|
@@ -13,7 +13,7 @@ values (date changes can be undone).
 | 📍 **Location from a GPX track** | Upload tracks from Komoot, Strava, Garmin etc. Photos without a location get the position you were at when they were taken. |
 | 📍 **Location from nearby photos** | A phone photo with GPS taken a few minutes before or after (e.g. your camera has no GPS, your phone does). |
 | 📍 **Location from the same photo** | Another version of the same shot that has a location: `IMG_1234.CR2` → `IMG_1234-HDR.dng`, `IMG_1234_edited.jpg`. |
-| 📍 **Location on the map** | Select photos and click on the map. |
+| 📍 **Location on the map** | Search a place or address (or paste coordinates) and place the selected photos there, or click on the map. |
 
 Everything runs locally. Photos never leave your server. It combines two earlier tools: Immich Age
 Guesser (dates from faces) and a geotagging notebook (GPX → RAW files).
@@ -34,15 +34,41 @@ Guesser (dates from faces) and a geotagging notebook (GPX → RAW files).
      gets the nearest point if it is within the tolerance.
    - **Same-name file** has priority (an HDR merge gets exactly the location of its RAW file),
      then the **GPX track**, then **nearby photos** with a location (interpolated between the
-     photos before and after, up to 10 min apart).
+     photos before and after, up to 10 min apart). Photos of the *same camera* come first and are
+     compared by that camera's own clock, so a wrong clock does not matter; another camera (e.g. your
+     phone) only counts if the same camera has nothing close, with a lower confidence. If the photos
+     before and after are too far apart for the time between them (faster than 250 km/h: a wrong
+     clock or a flight), the nearer one is used instead of a point in between.
 3. Review on the map and in the list: each suggestion shows its source, how far it is in time
    from real track data, and a confidence. Select (all, high confidence only, one camera …),
-   discard what looks wrong, or **place selected photos on the map** by clicking. Then click
+   discard what looks wrong, or place selected photos yourself (see below). Then click
    **Write locations**.
 
 Immich then fills in the place names (city, country) itself. Immich has no API to set the
-altitude, so the GPX elevation is only shown, not written. Immich's API also cannot *remove* a
-location again, only change it, so take the review step seriously.
+altitude, so the GPX elevation is only shown, not written.
+
+### Placing photos by address
+
+The map has a search box: type a place, an address or a landmark (“Marienplatz München”,
+“Zugspitze”), or paste coordinates (`47.4211, 10.9853`, e.g. copied from Google Maps). Pick a
+result, and click **Place … selected photos here** in its bubble. Or click **Place selected on the
+map…** and click the spot.
+
+This works without GPX tracks too: untick the tracks and choose an **album** (all its photos
+without a location are listed), or enter a time range. Tick *Also list photos that already have a
+location* to correct a wrong location.
+
+The search uses [Photon](https://github.com/komoot/photon), the OpenStreetMap geocoder of Komoot
+(`https://photon.komoot.io`). This server sends it the search text and the map centre (to prefer
+nearby results), nothing else. You can point it at your own Photon instance or switch it off in
+the settings; typed coordinates always work.
+
+### Photos that need no location
+
+Screenshots, scanned documents, memes …: select them (the **Screenshots** button selects file names
+like `Screenshot_…` and graphics without a camera) and click **No location needed**. Later searches
+skip them. The list is at the bottom of the page, where you can unmark them again. This is only
+remembered by this tool; nothing is written to Immich.
 
 ### Camera clocks and time zones
 
@@ -131,8 +157,12 @@ description, for example:
   `…/Location/Same-name file`, `…/Location/Map`. The tag root can be changed or switched off in the
   settings.
 - **History** lists every write with the values from before. **Undo** puts the previous dates
-  (and descriptions) back and removes the tag. Locations can only be undone if the photo had a
-  different location before, because Immich's API cannot remove a location.
+  (and descriptions) or locations back and removes the tag. Photos that were changed in Immich
+  since are left alone.
+- Removing a location: Immich's API has no way to empty it, but Immich treats exactly `0, 0` as
+  “no location” and clears it. So undoing a location on a photo that had none writes `0, 0` and
+  then checks that Immich cleared it; if it did not, the written location is put back (no photo is
+  left in the Atlantic) and the History page says so.
 
 ## Installation
 
@@ -261,6 +291,7 @@ is shown read-only on the Settings page.
 | `AGE_ESTIMATOR` | `mivolo` | or `ollama` (then `OLLAMA_URL`, `OLLAMA_MODEL`) |
 | `TAG_ROOT` | `Metadatenmaster` | empty to disable tagging |
 | `MAP_TILE_URL`, `MAP_ATTRIBUTION` | OpenStreetMap | background map of the Locations page |
+| `GEOCODER_URL` | `https://photon.komoot.io` | address search on the map; empty to switch it off |
 | `WRITE_DESCRIPTION` | `true` | add the explanation line to estimated photos |
 | `DATA_DIR` | `/data` in Docker | where settings, GPX tracks, records and the model are stored |
 

@@ -140,7 +140,8 @@ a.danger { color: var(--err); }
 .track-actions { font-size: 0.85rem; margin-top: 2px; }
 .needs-times { margin-top: 6px; padding: 6px 8px; border-radius: 6px; background: var(--suggest); }
 .geo-form label { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 2px; }
-.geo-form label.check { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
+.geo-form label.check { display: block; }
+.geo-form label.check > input[type=checkbox] { margin: 0 6px 0 0; vertical-align: -2px; }
 .geo-form .row label { margin: 0; }
 .geo-form fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; padding: 4px 10px 8px; }
 .geo-form details { margin: 8px 0; border-top: 1px solid var(--border); padding-top: 6px; }
@@ -163,3 +164,16 @@ table.history th, table.history td, table.changes th, table.changes td { text-al
 table.changes { font-size: 0.85rem; }
 tr.details > td { background: var(--bg); }
 .err { color: var(--err); }
+
+/* address search on the map */
+.map-search { background: var(--surface); width: min(320px, 70vw); }
+.map-search input { width: 100%; border: 0; padding: 8px 10px; font: inherit; color: var(--text); background: var(--surface); border-radius: 4px; }
+.map-search-results { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow: auto; border-top: 1px solid var(--border); }
+.map-search-results li { padding: 6px 10px; cursor: pointer; display: flex; flex-direction: column; color: var(--text); }
+.map-search-results li span { color: var(--muted); font-size: 0.85em; }
+.map-search-results li:hover { background: var(--bg); }
+.search-popup button { margin-top: 6px; }
+.search-tip { margin: 6px 0 0; font-size: 0.85rem; }
+.no-location-list { list-style: none; padding: 0; }
+.no-location-list li { display: flex; gap: 10px; align-items: center; padding: 3px 0; }
+details#no-location-box summary { cursor: pointer; }

@@ -208,6 +208,10 @@ class ImmichClient:
             next_page = result.get("nextPage")
             page = int(next_page) if next_page else None
 
+    def album_all_assets(self, album_id: str) -> list[Asset]:
+        """Photos and videos of an album."""
+        return list(self.search_assets(albumIds=[album_id], withPeople=False))
+
     def album_assets(self, album_id: str) -> list[Asset]:
         assets = self.search_assets(albumIds=[album_id], type="IMAGE")
         return sorted(assets, key=lambda a: a.file_name.lower())

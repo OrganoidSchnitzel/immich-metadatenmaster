@@ -10,6 +10,7 @@ const applyBtn = document.getElementById("geo-apply");
 const placeBtn = document.getElementById("geo-place");
 const discardBtn = document.getElementById("geo-discard");
 const cameraFilter = document.getElementById("camera-filter");
+const noLocationBtn = document.getElementById("geo-no-location");
 
 const SOURCE_LABEL = { gpx: "GPX track", sibling: "Same-name file", nearby: "Nearby photo", map: "Placed by you" };
 const STORE_KEY = "metadatenmaster.locations";
@@ -148,11 +149,102 @@ map.on("click", async (ev) => {
   setPlacing(false);
   if (!ids.length) return;
   try {
-    await api("POST", "/api/geo/place", { asset_ids: ids, lat: ev.latlng.lat, lon: ev.latlng.lng });
+    await api("POST", "/api/geo/place", { asset_ids: ids, lat: ev.latlng.lat, lon: ev.latlng.lng, label: "" });
     await loadSuggestions();
   } catch (e) {
     alert(e.message);
   }
+});
+
+// --- address search on the map ----------------------------------------------------------------
+
+let searchMarker = null;
+
+const SearchControl = L.Control.extend({
+  options: { position: "topright" },
+  onAdd() {
+    const box = L.DomUtil.create("div", "map-search leaflet-bar");
+    box.innerHTML = `<input type="search" placeholder="${app.dataset.geocoder ? "Search a place or address…" : "Coordinates, e.g. 47.42, 10.98"}"
+        aria-label="Search a place" autocomplete="off"><ul class="map-search-results" hidden></ul>`;
+    L.DomEvent.disableClickPropagation(box);
+    L.DomEvent.disableScrollPropagation(box);
+    return box;
+  },
+});
+const searchBox = new SearchControl().addTo(map).getContainer();
+const searchInput = searchBox.querySelector("input");
+const searchList = searchBox.querySelector("ul");
+let searchResults = [];
+let searchTimer = null;
+let searchSeq = 0;
+
+async function runSearch(text) {
+  const seq = ++searchSeq;
+  const c = map.getCenter();
+  const params = new URLSearchParams({ q: text, lang: navigator.language || "en", lat: c.lat, lon: c.lng });
+  try {
+    const data = await api("GET", `/api/geocode?${params}`);
+    if (seq !== searchSeq) return;
+    searchResults = data.results;
+    searchList.innerHTML = searchResults.length
+      ? searchResults.map((r, i) => `<li data-i="${i}"><strong>${esc(r.name)}</strong><span>${esc(r.detail)}</span></li>`).join("")
+      : `<li class="muted">Nothing found.</li>`;
+  } catch (e) {
+    if (seq !== searchSeq) return;
+    searchResults = [];
+    searchList.innerHTML = `<li class="err">${esc(e.message)}</li>`;
+  }
+  searchList.hidden = false;
+}
+
+function placeLabel(r) { return r.detail && r.kind !== "coordinates" ? `${r.name}, ${r.detail}` : r.name; }
+
+function showResult(r) {
+  searchList.hidden = true;
+  if (r.bounds) map.fitBounds(r.bounds, { maxZoom: 17 }); else map.setView([r.lat, r.lon], 16);
+  if (searchMarker) searchMarker.remove();
+  searchMarker = L.marker([r.lat, r.lon]).addTo(map);
+  const div = L.DomUtil.create("div", "search-popup");
+  div.innerHTML = `<strong>${esc(r.name)}</strong><div class="muted">${esc(r.detail)}</div><button type="button" class="primary"></button>`;
+  const btn = div.querySelector("button");
+  const refresh = () => {
+    const n = visibleSelectedIds().length;
+    btn.disabled = !n;
+    btn.textContent = n ? `Place ${n} selected photo${n === 1 ? "" : "s"} here` : "Select photos below to place them here";
+  };
+  btn.addEventListener("click", async () => {
+    const ids = visibleSelectedIds();
+    if (!ids.length) return;
+    try {
+      await api("POST", "/api/geo/place", { asset_ids: ids, lat: r.lat, lon: r.lon, label: placeLabel(r) });
+      searchMarker.closePopup();
+      await loadSuggestions();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+  searchMarker.bindPopup(div, { minWidth: 220 }).on("popupopen", refresh).openPopup();
+}
+
+searchInput.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  const text = searchInput.value.trim();
+  if (text.length < 3) { searchList.hidden = true; return; }
+  searchTimer = setTimeout(() => runSearch(text), 350);
+});
+searchInput.addEventListener("keydown", async (ev) => {
+  if (ev.key === "Escape") { searchList.hidden = true; return; }
+  if (ev.key !== "Enter") return;
+  ev.preventDefault();
+  clearTimeout(searchTimer);
+  const text = searchInput.value.trim();
+  if (!text) return;
+  await runSearch(text);
+  if (searchResults.length) showResult(searchResults[0]);
+});
+searchList.addEventListener("click", (ev) => {
+  const li = ev.target.closest("[data-i]");
+  if (li) showResult(searchResults[Number(li.dataset.i)]);
 });
 
 function setPlacing(on) {
@@ -286,7 +378,7 @@ document.getElementById("tracks").addEventListener("click", async (ev) => {
 // --- finding -------------------------------------------------------------------------------
 
 const PREF_FIELDS = ["camera_tz", "offset", "tolerance_min", "max_gap_min", "nearby_min", "use_photo_tz",
-  "use_nearby", "use_siblings", "use_tracks"];
+  "use_nearby", "use_siblings", "use_tracks", "include_located"];
 
 function restoreForm() {
   const prefs = loadPrefs();
@@ -317,6 +409,7 @@ function formRequest() {
     use_nearby: f.use_nearby.checked,
     nearby_min: Number(f.nearby_min.value || 0),
     use_siblings: f.use_siblings.checked,
+    include_located: f.include_located.checked,
   };
 }
 
@@ -355,6 +448,10 @@ function visibleSelectedIds() {
 }
 
 function suggestionHtml(it) {
+  if (it.status === "located") {
+    return `<div class="badge estimated">Has a location: ${Number(it.current_lat).toFixed(5)}, ${Number(it.current_lon).toFixed(5)}
+      <div class="muted">Place it on the map to change it.</div></div>`;
+  }
   if (it.status !== "ok") return `<div class="badge problem">No suggestion: ${esc(it.reason || "")}</div>`;
   let detail = "";
   if (it.source === "gpx") {
@@ -363,15 +460,18 @@ function suggestionHtml(it) {
   } else if (it.source === "sibling") {
     detail = `copied from ${esc(it.detail)}`;
   } else if (it.source === "nearby") {
-    detail = `${esc(it.detail)}, ${fmtDiff(it.time_diff_s)} apart`;
+    detail = `${esc(it.detail)}, ${fmtDiff(it.time_diff_s)} apart` +
+      (it.same_camera ? " · same camera" : " · another camera") + (it.method === "interpolated" ? " · in between" : "");
   } else {
-    detail = "your choice";
+    detail = it.detail ? esc(it.detail) : "your choice";
   }
+  const replaces = it.current_lat !== undefined && it.current_lat !== null
+    ? `<div class="muted">replaces ${Number(it.current_lat).toFixed(5)}, ${Number(it.current_lon).toFixed(5)}</div>` : "";
   const ele = it.ele !== null && it.ele !== undefined ? ` · ${Math.round(it.ele)} m` : "";
   return `<div class="badge suggest src-${esc(it.source)}">
       <div><strong>${esc(SOURCE_LABEL[it.source] || it.source)}</strong> · <span class="conf-${esc(it.confidence)}">${esc(it.confidence)} confidence</span></div>
       <div>${detail}</div>
-      <div class="muted">${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}${ele}</div>
+      <div class="muted">${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}${ele}</div>${replaces}
     </div>`;
 }
 
@@ -383,7 +483,8 @@ function render() {
   const src = Object.entries(run.sources || {}).map(([k, v]) => `${v} from ${SOURCE_LABEL[k] || k}`).join(", ");
   document.getElementById("run-summary").innerHTML =
     `Search of ${esc(fmtInstant(run.created_at))}: ${run.searched} photos looked at, ${run.with_location} already had a location, ` +
-    `${run.candidates} without one in the time span, <strong>${run.suggested} with a suggestion</strong>${src ? ` (${esc(src)})` : ""}.` +
+    `${run.candidates} without one ${run.whole_album ? "in the album" : "in the time span"}, <strong>${run.suggested} with a suggestion</strong>${src ? ` (${esc(src)})` : ""}.` +
+    (run.no_location_needed ? ` ${run.no_location_needed} skipped as “no location needed”.` : "") +
     (opts.offset_s ? ` Clock offset ${esc(formatOffset(opts.offset_s))}.` : "") +
     (items.length < run.candidates ? ` ${run.candidates - items.length} already written or discarded.` : "");
 
@@ -436,6 +537,7 @@ function updateSelection() {
   applyBtn.textContent = ok ? `Write ${ok} location${ok === 1 ? "" : "s"}` : "Write locations";
   placeBtn.disabled = !ids.length;
   discardBtn.disabled = !ids.length;
+  noLocationBtn.disabled = !ids.length;
   for (const card of grid.querySelectorAll(".card")) card.classList.toggle("selected", selected.has(card.dataset.id));
   for (const [id, m] of markers) {
     const sel = selected.has(id);
@@ -470,8 +572,8 @@ document.querySelectorAll("[data-select]").forEach(btn => btn.addEventListener("
   const mode = btn.dataset.select;
   selected.clear();
   for (const it of visibleItems()) {
-    if (mode === "all" || (mode === "ok" && it.status === "ok") || (mode === "no_match" && it.status !== "ok")
-        || (mode === "high" && it.status === "ok" && it.confidence === "high")) {
+    if (mode === "all" || (mode === "ok" && it.status === "ok") || (mode === "no_match" && it.status === "no_match")
+        || (mode === "high" && it.status === "ok" && it.confidence === "high") || (mode === "screenshot" && it.screenshot)) {
       selected.add(it.id);
     }
   }
@@ -496,12 +598,42 @@ discardBtn.addEventListener("click", async () => {
   await loadSuggestions();
 });
 
+noLocationBtn.addEventListener("click", async () => {
+  const ids = visibleSelectedIds();
+  if (!confirm(`Mark ${ids.length} photo${ids.length === 1 ? "" : "s"} as “no location needed”? Later searches skip them. ` +
+    "Nothing changes in Immich, and you can undo this at the bottom of the page.")) return;
+  try {
+    await api("POST", "/api/geo/no-location", { asset_ids: ids });
+    await Promise.all([loadSuggestions(), loadNoLocation()]);
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+async function loadNoLocation() {
+  const list = await api("GET", "/api/geo/no-location");
+  document.getElementById("no-location-count").textContent = list.length;
+  document.getElementById("no-location-list").innerHTML = list.map(x => `<li>
+      <a href="${esc(immichUrl)}/photos/${esc(x.id)}" target="_blank" rel="noopener">${esc(x.file_name || x.id)}</a>
+      <button type="button" data-unmark="${esc(x.id)}">Unmark</button></li>`).join("") || `<li class="muted">None.</li>`;
+}
+
+document.getElementById("no-location-list").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("[data-unmark]");
+  if (!btn) return;
+  await api("POST", "/api/geo/no-location/remove", { asset_ids: [btn.dataset.unmark] });
+  await loadNoLocation();
+});
+
 applyBtn.addEventListener("click", async () => {
-  const ids = visibleSelectedIds().filter(id => items.find(it => it.id === id).status === "ok");
+  const chosen = visibleSelectedIds().map(id => items.find(it => it.id === id)).filter(it => it.status === "ok");
+  const ids = chosen.map(it => it.id);
+  const replacing = chosen.filter(it => it.current_lat !== undefined && it.current_lat !== null).length;
   const fixTime = !document.getElementById("fix-time-opt").hidden && document.getElementById("fix-time").checked;
   const msg = `Write the location of ${ids.length} photo${ids.length === 1 ? "" : "s"} to Immich?` +
-    (fixTime ? `\n\nTheir capture times are corrected by ${formatOffset(run.options.offset_s)} as well (this part can be undone in History).` : "") +
-    "\n\nImmich can change a location later, but cannot remove it again.";
+    (replacing ? ` ${replacing} of them already have a location, which is replaced.` : "") +
+    (fixTime ? `\n\nTheir capture times are corrected by ${formatOffset(run.options.offset_s)} as well.` : "") +
+    "\n\nYou can undo this in History.";
   if (!confirm(msg)) return;
   const resultEl = document.getElementById("apply-result");
   resultEl.hidden = true;
@@ -526,6 +658,6 @@ try {
 
 restoreForm();
 form.elements.camera_tz.addEventListener("change", renderTracks);
-Promise.all([loadTracks(), loadSuggestions()]).then(fitMap).catch(e => {
+Promise.all([loadTracks(), loadSuggestions(), loadNoLocation()]).then(fitMap).catch(e => {
   document.getElementById("tracks").innerHTML = `<li class="notice error">${esc(e.message)}</li>`;
 });

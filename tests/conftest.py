@@ -79,6 +79,8 @@ class FakeImmich:
         self.api_key = "key"
         self.denied_paths: set[str] = set()  # simulate missing API key permissions
         self.location_updates: list[dict[str, Any]] = []
+        # Immich clears a location of exactly (0, 0) when it processes it; set to simulate it not doing so.
+        self.keep_null_island = False
 
     # --- setup helpers ---------------------------------------------------------------------
 
@@ -202,8 +204,11 @@ class FakeImmich:
         if path == "/assets" and method == "PUT":
             if "latitude" in body:
                 self.location_updates.append(body)
+                lat, lon = body["latitude"], body["longitude"]
+                if lat == 0 and lon == 0 and not self.keep_null_island:
+                    lat = lon = None
                 for aid in body["ids"]:
-                    self.assets[aid].latitude, self.assets[aid].longitude = body["latitude"], body["longitude"]
+                    self.assets[aid].latitude, self.assets[aid].longitude = lat, lon
                 return httpx.Response(204)
             if self.reject_timezone and "timeZone" in body:
                 return httpx.Response(400, json={"message": "property timeZone should not exist"})
@@ -300,7 +305,10 @@ def guesser(fake: FakeImmich, settings: Settings, estimator: FakeEstimator) -> A
 
 @pytest.fixture
 def geo(guesser: AgeGuesser) -> GeoTagger:
-    return GeoTagger(guesser.settings, guesser.immich, guesser.store)
+    g = GeoTagger(guesser.settings, guesser.immich, guesser.store)
+    g.history.clear_poll_s = 0
+    guesser.history.clear_poll_s = 0
+    return g
 
 
 def gpx(points: list[tuple[float, float, str | None]], name: str = "Tour") -> bytes:
