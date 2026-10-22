@@ -44,8 +44,9 @@ Guesser (dates from faces) and a geotagging notebook (GPX → RAW files).
    discard what looks wrong, or place selected photos yourself (see below). Then click
    **Write locations**.
 
-Immich then fills in the place names (city, country) itself. Immich has no API to set the
-altitude, so the GPX elevation is only shown, not written.
+Each suggestion shows the name of the place (“📍 Höllentalangerhütte, Grainau”), so you can check
+it without zooming in. Immich fills in its own place names (city, country) after writing. Immich has
+no API to set the altitude, so the GPX elevation is only shown, not written.
 
 ### Placing photos by address
 
@@ -60,8 +61,10 @@ location* to correct a wrong location.
 
 The search uses [Photon](https://github.com/komoot/photon), the OpenStreetMap geocoder of Komoot
 (`https://photon.komoot.io`). This server sends it the search text and the map centre (to prefer
-nearby results), nothing else. You can point it at your own Photon instance or switch it off in
-the settings; typed coordinates always work.
+nearby results), and, for the place names of suggestions, their positions rounded to about 100 m
+(each place is asked about once, then remembered). You can point it at your own Photon instance,
+switch off the place names, or switch it off completely in the settings; typed coordinates always
+work.
 
 ### Photos that need no location
 
@@ -79,12 +82,17 @@ therefore needs to know:
   settings). Photos that store a time zone (phones, some newer cameras) use their own, unless you
   untick *Trust the time zone stored in a photo*.
 - **Clock offset**: if the camera's clock was simply wrong, e.g. `+1:00:00` when it was still on
-  winter time, or `-0:03:20` when it ran 3 min 20 s fast. Tip: photograph your phone's clock with
-  the camera to read off the offset. When writing, you can *also correct the photo times* by the
-  offset (this part can be undone in History).
+  winter time, or `-0:03:20` when it ran 3 min 20 s fast. When writing, you can *also correct the
+  photo times* by the offset (this part can be undone in History).
 
-If most photos fall outside the tracks but would fit with the clock shifted by whole hours, the
-page says so and offers to search again with that offset.
+After a search, **Camera clocks** lists every camera with photos without a location, each with its
+own offset:
+
+- If a camera's photos would fit the tracks much better with its clock shifted by whole hours (a
+  wrong time zone or summer time), it says so: **Shift by −2 h and search again**.
+- **Sync with another camera…** works out an offset for you: pick a photo of that camera, then the
+  photo of your phone (whose clock sets itself) showing the same moment. The difference of their
+  times is the offset.
 
 ## Dates
 
@@ -123,6 +131,16 @@ What precision to expect:
 
 Photos without any known face can only be dated as part of an event. Select them together with
 photos that have faces and tick *same event*.
+
+### Versions with a different date (HDR, panoramas, edits)
+
+HDR merges and panoramas (`IMG_1234-HDR.dng`, `IMG_1234-Pano.dng`), edited copies
+(`IMG_1234_edited.jpg`) and second downloads (`IMG_1234 (1).jpg`) often lose the capture date, so
+Immich shows them on the day they were made. **Find versions** on the Dates page looks for them in the
+whole library (or one album), finds their original (`IMG_1234.CR2`) and suggests its date, and its
+location if the version has none. If a camera's counter started again and there are several
+`IMG_1234.CR2` from different years, the one in the same folder wins; otherwise the version is
+skipped rather than guessed.
 
 ### Workflow for scans
 
@@ -165,7 +183,7 @@ description, for example:
 ## History, tags and undo
 
 - Changed photos are tagged, so you can find them in Immich: `Metadatenmaster/Date/Manual`,
-  `…/Date/Estimated`, `…/Date/File name`, `…/Location/GPX`, `…/Location/Nearby photo`,
+  `…/Date/Estimated`, `…/Date/File name`, `…/Date/From original`, `…/Location/GPX`, `…/Location/Nearby photo`,
   `…/Location/Same-name file`, `…/Location/Map`. The tag root can be changed or switched off in the
   settings.
 - **History** lists every write with the values from before. **Undo** puts the previous dates
@@ -280,7 +298,8 @@ immich-metadatenmaster set-date    --album "Box 3" --date 1987 [--remove-from-al
 immich-metadatenmaster estimate    --album "Box 3" [--joint] [--not-before 1975] [--not-after 1995] [--apply [--remove-from-album]]
 immich-metadatenmaster calibrate   [--per-person 60]
 immich-metadatenmaster geotag      --gpx tour.gpx [--gpx more.gpx] [--camera-tz Europe/Berlin] [--offset +1:00:00]
-                                   [--album "Alps 2024"] [--apply [--fix-time]]
+                                   [--camera-offset "Canon EOS 80D=-0:03:20"] [--album "Alps 2024"]
+                                   [--apply [--fix-time]]
 immich-metadatenmaster check       [--image face.jpg]   # tests the Immich connection and the model
 immich-metadatenmaster check-model [--image face.jpg]   # tests only the model
 ```
@@ -304,6 +323,7 @@ is shown read-only on the Settings page.
 | `TAG_ROOT` | `Metadatenmaster` | empty to disable tagging |
 | `MAP_TILE_URL`, `MAP_ATTRIBUTION` | OpenStreetMap | background map of the Locations page |
 | `GEOCODER_URL` | `https://photon.komoot.io` | address search on the map; empty to switch it off |
+| `PLACE_NAMES` | `true` | show place names next to location suggestions (uses the geocoder) |
 | `WRITE_DESCRIPTION` | `true` | add the explanation line to estimated photos |
 | `DATA_DIR` | `/data` in Docker | where settings, GPX tracks, records and the model are stored |
 

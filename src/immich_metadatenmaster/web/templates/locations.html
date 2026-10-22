@@ -3,7 +3,8 @@
 {% block head %}<link rel="stylesheet" href="{{ url_for('static', path='vendor/leaflet/leaflet.css') }}">{% endblock %}
 {% block content %}
 <div id="app" data-tz="{{ timezone }}" data-tiles="{{ tile_url }}" data-attribution="{{ attribution }}"
-     data-immich="{{ immich_url }}" data-geocoder="{{ 'on' if geocoder else '' }}">
+     data-immich="{{ immich_url }}" data-geocoder="{{ 'on' if geocoder else '' }}"
+     data-place-names="{{ 'on' if place_names else '' }}">
   {% if error %}<div class="notice error"><strong>Cannot reach Immich.</strong> {{ error }}</div>{% endif %}
   <div class="section-head">
     <h1>Locations</h1>
@@ -52,7 +53,7 @@
             <label class="check"><input type="checkbox" name="use_photo_tz" checked> Trust the time zone stored in a photo (phones)</label>
             <label>Clock offset <input name="offset" placeholder="+0:00:00" size="10"></label>
             <small class="muted">Added to the camera's time to get the real time, e.g. <code>+1:00:00</code> if the camera was an hour behind.
-              Tip: photograph your phone's clock with the camera and compare.</small>
+              After a search you can set it per camera, or work it out from a camera photo and a phone photo of the same moment.</small>
           </details>
           <details>
             <summary>Matching</summary>
@@ -92,7 +93,13 @@
   <section id="review" class="panel sticky review" hidden>
     <h2>3. Review and write</h2>
     <div id="run-summary" class="muted"></div>
-    <div id="hint" class="notice warn" hidden></div>
+    <details id="cameras" class="cameras" hidden>
+      <summary>Camera clocks <span id="cameras-note" class="muted"></span></summary>
+      <p class="muted">Time added to each camera's clock to get the real time. Change it and search again, or let the
+        tool work it out from a photo of this camera and one of another camera (e.g. your phone) of the same moment.</p>
+      <table class="camera-table"><tbody id="camera-rows"></tbody></table>
+      <button type="button" id="search-again" class="primary">Search again with these clocks</button>
+    </details>
     <div class="selection row">
       <strong id="sel-count"></strong>
       <button type="button" data-select="all">All</button>
@@ -121,6 +128,15 @@
   <section>
     <div id="geo-grid"></div>
   </section>
+
+  <dialog id="sync" class="sync">
+    <form method="dialog" class="sync-head">
+      <strong id="sync-title"></strong>
+      <button value="close" aria-label="Close">×</button>
+    </form>
+    <p id="sync-text" class="muted"></p>
+    <div id="sync-body"></div>
+  </dialog>
 
   <section>
     <details id="no-location-box">

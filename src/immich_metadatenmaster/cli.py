@@ -155,7 +155,13 @@ def cmd_geotag(args: argparse.Namespace, settings: Settings) -> None:
         track_ids.append(t["id"])
         print(f"Track '{t['name']}': {t['start'] or '?'} – {t['end'] or '?'}, {t['distance_km']} km")
     album = g.immich.find_album(args.album)["id"] if args.album else None
-    opts = GeoOptions(track_ids=track_ids or None, album_id=album, camera_tz=camera_tz,
+    camera_offsets = {}
+    for item in args.camera_offset:
+        name, sep, value = item.rpartition("=")
+        if not sep or not name.strip():
+            raise SystemExit(f"Write --camera-offset like \"Canon EOS 80D=+1:00:00\" (got '{item}').")
+        camera_offsets[name.strip()] = _parse_offset(value)
+    opts = GeoOptions(track_ids=track_ids or None, album_id=album, camera_tz=camera_tz, camera_offsets=camera_offsets,
                       use_photo_tz=not args.ignore_photo_tz, offset_s=_parse_offset(args.offset),
                       tolerance_min=args.tolerance, max_gap_min=args.max_gap, use_nearby=not args.no_nearby)
     try:
@@ -167,10 +173,10 @@ def cmd_geotag(args: argparse.Namespace, settings: Settings) -> None:
                 else f"–  {s.get('reason', '')}")
         print(f"{s['file_name'][:40]:40} {(s['local'] or '')[:19]:19}  {line}")
     print(f"{run['suggested']} of {run['candidates']} photos without a location have a suggestion.")
-    if run.get("hint"):
-        h = run["hint"]
-        print(f"Hint: {h['matches']} photos would fit the tracks with the clock shifted by {h['hours']:+d} h "
-              f"(--offset {h['hours']:+d}:00:00); check --camera-tz.")
+    for h in run.get("hints", []):
+        camera = h["camera"] or "an unknown camera"
+        print(f"Hint: {h['matches']} photos of {camera} would fit the tracks with the clock shifted by "
+              f"{h['hours']:+d} h (--camera-offset \"{h['camera']}={h['hours']:+d}:00:00\"); or check --camera-tz.")
     if args.apply:
         out = geo.apply(list(geo.suggestions()), fix_time=args.fix_time, progress=_progress("Writing"))
         fixed = f", corrected {out['times_fixed']} times" if out["times_fixed"] else ""
@@ -240,6 +246,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--camera-tz", help="time zone of the camera clock (default: the TIMEZONE setting)")
     p.add_argument("--ignore-photo-tz", action="store_true", help="ignore time zones stored in the photos")
     p.add_argument("--offset", default="0", help="added to the camera time to get the real time, e.g. +1:00:00")
+    p.add_argument("--camera-offset", action="append", default=[], metavar="CAMERA=OFFSET",
+                   help='the same for one camera, e.g. "Canon EOS 80D=+1:00:00" (repeatable)')
     p.add_argument("--tolerance", type=float, default=10, help="minutes before/after the track (default 10)")
     p.add_argument("--max-gap", type=float, default=15, help="bridge recording pauses up to this many minutes")
     p.add_argument("--no-nearby", action="store_true", help="do not use nearby photos with a location")

@@ -58,6 +58,7 @@ class FakeAsset:
     longitude: float | None = None
     type: str = "IMAGE"
     visibility: str = "timeline"
+    folder: str = "upload"
 
     @property
     def file_created_at(self) -> str:
@@ -112,7 +113,7 @@ class FakeImmich:
 
     def add_photo(self, file_name: str, local: str, *, tz: str | None = None, lat: float | None = None,
                   lon: float | None = None, make: str = "Canon", model: str = "Canon EOS 80D",
-                  album: str | None = None) -> str:
+                  album: str | None = None, exif_date: bool = True, folder: str = "upload") -> str:
         """A camera photo: `local` is the camera's clock time ("2024-07-01T10:00:00"); with `tz`
         (e.g. "+02:00" offset in the file and "Europe/Berlin" as Immich's zone) the EXIF date has an offset."""
         aid = self.add_asset(file_name, date.fromisoformat(local[:10]), [], album=album, make=make, model=model)
@@ -122,7 +123,10 @@ class FakeImmich:
             offset = datetime.fromisoformat(local).replace(tzinfo=ZoneInfo(tz)).strftime("%z")
             a.exif_date = f"{local}.000{offset[:3]}:{offset[3:]}"
             a.time_zone = tz
+        elif exif_date:  # a camera clock time without a zone: Immich reads it as UTC
+            a.exif_date = f"{local}.000Z"
         a.latitude, a.longitude = lat, lon
+        a.folder = folder
         return aid
 
     def true_age(self, asset: FakeAsset, person_id: str) -> float:
@@ -149,6 +153,7 @@ class FakeImmich:
         return {
             "id": a.id, "originalFileName": a.file_name, "type": a.type, "localDateTime": a.local_datetime,
             "fileCreatedAt": a.file_created_at, "visibility": a.visibility,
+            "originalPath": f"/photos/{a.folder}/{a.file_name}",
             "exifInfo": {"dateTimeOriginal": a.exif_date, "make": a.make, "model": a.model,
                          "description": a.description, "timeZone": a.time_zone,
                          "latitude": a.latitude, "longitude": a.longitude},
@@ -194,6 +199,8 @@ class FakeImmich:
                        if any(f.person_id in body["personIds"] for f in a.faces)]
             else:
                 ids = list(self.assets)
+            if "originalFileName" in body:
+                ids = [i for i in ids if body["originalFileName"].lower() in self.assets[i].file_name.lower()]
             if "takenAfter" in body:
                 lo, hi = (datetime.fromisoformat(body[k].replace("Z", "+00:00")) for k in ("takenAfter", "takenBefore"))
                 ids = [i for i in ids

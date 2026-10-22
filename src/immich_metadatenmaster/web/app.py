@@ -4,6 +4,7 @@ Suggestions are only written to Immich when the user accepts them."""
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from contextlib import asynccontextmanager
 from datetime import date, datetime
@@ -20,12 +21,13 @@ from starlette.concurrency import run_in_threadpool
 
 from ..config import ENV_NAMES, Settings, env_overrides
 from ..dates import parse_date_spec, parse_year_bound
-from ..geocode import GeocodeError, search as geocode_search
+from ..geocode import GeocodeError, reverse as reverse_geocode, search as geocode_search
 from ..geotag import GeoOptions, GeoTagger
 from ..gpx import MAX_GPX_BYTES, GpxError
 from ..immich import ImmichClient, ImmichError
 from ..jobs import JobManager
 from ..service import AgeGuesser, build_guesser, report_dict
+from ..versions import VersionDates
 
 log = logging.getLogger(__name__)
 _HERE = Path(__file__).parent
@@ -101,6 +103,7 @@ class GeoRequest(BaseModel):
     nearby_min: float = Field(default=10, ge=0, le=24 * 60)
     use_siblings: bool = True
     include_located: bool = False
+    camera_offsets: dict[str, int] = Field(default_factory=dict)
 
 
 class PlaceRequest(BaseModel):
@@ -108,6 +111,20 @@ class PlaceRequest(BaseModel):
     lat: float = Field(ge=-90, le=90)
     lon: float = Field(ge=-180, le=180)
     label: str = ""
+
+
+class VersionFindRequest(BaseModel):
+    album_id: str | None = None
+
+
+class PlaceNamesRequest(BaseModel):
+    keys: list[str] = Field(max_length=5000)  # "47.012,11.007": positions rounded to 3 decimals (~100 m)
+    lang: str | None = None
+
+
+_PLACE_KEY = re.compile(r"^-?\d{1,2}\.\d{3},-?\d{1,3}\.\d{3}$")
+# New names looked up per request; the page asks again for the rest (go easy on the public geocoder).
+PLACE_BATCH = 15
 
 
 class GeoApplyRequest(BaseModel):
@@ -157,6 +174,7 @@ class Runtime:
         self._lock = threading.Lock()
         self.guesser = guesser if guesser is not None else (build(settings) if settings.configured else None)
         self._geo: GeoTagger | None = None
+        self._versions: VersionDates | None = None
 
     def require(self) -> AgeGuesser:
         g = self.guesser
@@ -170,6 +188,13 @@ class Runtime:
         if geo is None or geo.immich is not g.immich:
             geo = self._geo = GeoTagger(g.settings, g.immich, g.store)
         return geo
+
+    def versions(self) -> VersionDates:
+        g = self.require()
+        v = self._versions
+        if v is None or v.immich is not g.immich:
+            v = self._versions = VersionDates(g.settings, g.immich, g.store)
+        return v
 
     def reconfigure(self, settings: Settings) -> None:
         with self._lock:
@@ -201,6 +226,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
 
     app = FastAPI(title="Immich Metadatenmaster", lifespan=lifespan)
     geo = runtime.geo
+    versions = runtime.versions
     templates = Jinja2Templates(directory=_HERE / "templates")
     templates.env.filters["local_time"] = lambda value: local_time(value, runtime.settings.timezone)
     app.mount("/static", StaticFiles(directory=_HERE / "static"), name="static")
@@ -255,7 +281,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         guesser = g()
         albums, version, error = albums_or_error(guesser)
         return page(request, "dates.html", albums=albums, version=version, error=error,
-                    calibration=guesser.calibration_summary())
+                    calibration=guesser.calibration_summary(), immich_url=guesser.settings.public_url)
 
     @app.get("/locations", response_class=HTMLResponse, dependencies=[Depends(setup_redirect)])
     def locations_page(request: Request) -> Response:
@@ -264,7 +290,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         s = guesser.settings
         return page(request, "locations.html", albums=albums, error=error, timezone=s.timezone,
                     tile_url=s.map_tile_url, attribution=s.map_attribution, immich_url=s.public_url,
-                    geocoder=bool(s.geocoder_url))
+                    geocoder=bool(s.geocoder_url), place_names=bool(s.geocoder_url and s.place_names))
 
     @app.get("/history", response_class=HTMLResponse, dependencies=[Depends(setup_redirect)])
     def history_page(request: Request) -> Response:
@@ -496,6 +522,30 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
             guesser.calibrate(per_person=body.per_person, progress=progress)), label="Calibrating the age model")
         return job.to_dict()
 
+    # --- versions of a photo (HDR, panoramas, edits) -------------------------------------------
+
+    @app.post("/api/versions/find")
+    def versions_find(body: VersionFindRequest) -> dict[str, Any]:
+        v = versions()
+        return jobs.submit("versions-find", lambda progress: v.find(body.album_id or None, progress=progress),
+                           label="Looking for versions", meta={"page": "dates"}).to_dict()
+
+    @app.get("/api/versions")
+    def versions_list() -> list[dict[str, Any]]:
+        items = [{"id": aid, **data} for aid, data in versions().suggestions().items()]
+        return sorted(items, key=lambda x: x["file_name"].lower())
+
+    @app.post("/api/versions/apply")
+    def versions_apply(body: AssetIds) -> dict[str, Any]:
+        v = versions()
+        return jobs.submit("versions-apply", lambda progress: v.apply(body.asset_ids, progress=progress),
+                           label="Copying dates from originals", meta={"page": "dates"}).to_dict()
+
+    @app.post("/api/versions/discard")
+    def versions_discard(body: AssetIds) -> dict[str, Any]:
+        versions().discard(body.asset_ids)
+        return {"discarded": len(body.asset_ids)}
+
     # --- locations ----------------------------------------------------------------------------
 
     @app.get("/api/tracks")
@@ -549,7 +599,8 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
                 end=_local(body.end, tz), album_id=body.album_id or None, camera_tz=tz_name,
                 use_photo_tz=body.use_photo_tz, offset_s=body.offset_s, tolerance_min=body.tolerance_min,
                 max_gap_min=body.max_gap_min, use_nearby=body.use_nearby, nearby_min=body.nearby_min,
-                use_siblings=body.use_siblings, include_located=body.include_located)
+                use_siblings=body.use_siblings, include_located=body.include_located,
+                camera_offsets={k: v for k, v in body.camera_offsets.items() if abs(v) <= 30 * 86400})
         except ValueError as exc:
             raise bad_request(exc) from exc
         if bool(opts.start) != bool(opts.end):
@@ -563,6 +614,20 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         items = [{"id": aid, **data} for aid, data in tagger.suggestions().items()]
         items.sort(key=lambda x: x.get("instant") or "")
         return {"run": tagger.run(), "items": items}
+
+    @app.get("/api/geo/clock-candidates")
+    def clock_candidates(asset_id: str, camera_tz: str | None = None, use_photo_tz: bool = True,
+                         hours: float = 6) -> dict[str, Any]:
+        tagger = geo()
+        tz_name = camera_tz or tagger.settings.timezone
+        try:
+            _zone(tz_name)
+            return tagger.clock_candidates(asset_id, camera_tz=tz_name, use_photo_tz=use_photo_tz,
+                                           hours=min(max(hours, 0.5), 48))
+        except ValueError as exc:
+            raise bad_request(exc) from exc
+        except ImmichError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/api/geo/place")
     def geo_place(body: PlaceRequest) -> dict[str, Any]:
@@ -581,6 +646,32 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         except GeocodeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return {"results": results}
+
+    @app.post("/api/place-names")
+    def place_names(body: PlaceNamesRequest) -> dict[str, Any]:
+        """Names of the places at the given positions, from the cache or (a few per call) the geocoder."""
+        guesser = g()
+        s = guesser.settings
+        if not (s.place_names and s.geocoder_url):
+            return {"names": {}, "pending": 0, "enabled": False}
+        lang = (body.lang or "")[:2].lower()
+        keys = [k for k in dict.fromkeys(body.keys) if _PLACE_KEY.match(k)]
+        cache_key = {k: f"{k}|{lang}" for k in keys}
+        cached = guesser.store.place_names(list(cache_key.values()))
+        names = {k: cached[c] for k, c in cache_key.items() if c in cached}
+        missing = [k for k in keys if k not in names]
+        for k in missing[:PLACE_BATCH]:
+            lat, lon = (float(x) for x in k.split(","))
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                continue
+            try:
+                name = reverse_geocode(s.geocoder_url, lat, lon, lang=lang, transport=geocode_transport)
+            except GeocodeError as exc:
+                log.warning("Place name lookup failed: %s", exc)
+                return {"names": names, "pending": 0, "enabled": True, "error": str(exc)}
+            guesser.store.save_place_name(cache_key[k], name)
+            names[k] = name
+        return {"names": names, "pending": max(0, len(missing) - PLACE_BATCH), "enabled": True}
 
     @app.get("/api/geo/no-location")
     def list_no_location() -> list[dict[str, str]]:

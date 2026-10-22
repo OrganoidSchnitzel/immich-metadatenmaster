@@ -78,6 +78,7 @@ class Asset:
     longitude: float | None = None
     # "timeline", "archive", "hidden" (e.g. the video half of a Live Photo) or "locked".
     visibility: str = "timeline"
+    original_path: str = ""
 
     @classmethod
     def from_api(cls, d: dict[str, Any]) -> "Asset":
@@ -97,6 +98,7 @@ class Asset:
             latitude=_float(exif.get("latitude")),
             longitude=_float(exif.get("longitude")),
             visibility=d.get("visibility") or "timeline",
+            original_path=d.get("originalPath") or "",
         )
 
     @property

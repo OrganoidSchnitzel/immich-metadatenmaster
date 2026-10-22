@@ -37,6 +37,35 @@
   {% endif %}
 </section>
 
+<section id="versions" data-immich="{{ immich_url }}">
+  <h2>Versions with a different date</h2>
+  <p class="muted">HDR merges, panoramas and edited copies (<code>IMG_1234-HDR.dng</code>, <code>IMG_1234_edited.jpg</code>,
+    <code>IMG_1234 (1).jpg</code> …) often lose the capture date, so Immich shows them on the day they were exported.
+    This finds them and suggests the date of the original (<code>IMG_1234.CR2</code>), and its location if the version has none.</p>
+  <div class="row">
+    <label>Only in album
+      <select id="versions-album">
+        <option value="">(whole library)</option>
+        {% for a in albums %}<option value="{{ a.id }}">{{ a.albumName }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="button" id="versions-find" class="primary">Find versions</button>
+  </div>
+  <div id="versions-job" class="job" hidden></div>
+  <div id="versions-result" class="job-result" hidden></div>
+  <div id="versions-review" class="panel" hidden>
+    <div class="selection row">
+      <strong id="versions-count"></strong>
+      <button type="button" data-vselect="all">All</button>
+      <button type="button" data-vselect="none">None</button>
+      <button type="button" id="versions-apply" class="primary" disabled>Copy dates</button>
+      <button type="button" id="versions-discard" disabled>Discard</button>
+      <span class="muted shortcut-hint">Shift-click: range · <kbd>A</kbd> all · <kbd>Esc</kbd> none · <kbd>V</kbd> large view</span>
+    </div>
+    <div id="versions-grid" class="grid"></div>
+  </div>
+</section>
+
 <section>
   <h2>Calibration</h2>
   <p>

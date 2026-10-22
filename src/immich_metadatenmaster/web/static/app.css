@@ -209,3 +209,27 @@ body.no-scroll { overflow: hidden; }
 .viewer-info .badge { color: var(--text); display: inline-block; margin: 4px 0; }
 .viewer-title { display: flex; gap: 12px; align-items: baseline; }
 .viewer button[data-v=select] { color: var(--text); }
+
+/* camera clocks, clock sync, place names */
+.cameras { margin: 8px 0; border: 1px solid var(--border); border-radius: 10px; padding: 6px 12px; }
+.cameras summary { cursor: pointer; font-weight: 600; }
+.camera-table { border-collapse: collapse; width: 100%; margin: 6px 0; }
+.camera-table td { padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: top; }
+.camera-table input { padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; width: 8em; }
+.camera-table input.invalid { border-color: var(--err); }
+.camera-hint { color: var(--warn); margin-top: 4px; }
+.pulse { animation: pulse 1s ease-in-out 3; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 35%, transparent); } }
+dialog.sync { width: min(1100px, 94vw); max-height: 90vh; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); padding: 12px 16px; }
+dialog.sync::backdrop { background: rgba(0,0,0,0.5); }
+.sync-head { display: flex; justify-content: space-between; align-items: center; margin: 0; }
+.sync-head button { background: none; border: 0; font-size: 1.5rem; cursor: pointer; color: var(--text); }
+.sync-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; max-height: 60vh; overflow: auto; }
+.sync-photo { display: flex; flex-direction: column; gap: 4px; padding: 4px; text-align: left; font-size: 0.8rem; }
+.sync-photo img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 4px; background: var(--border); }
+.sync-pair { display: grid; grid-template-columns: minmax(200px, 1fr) 2fr; gap: 12px; align-items: start; margin-bottom: 10px; }
+.sync-pair figure { margin: 0; }
+.sync-pair figure img { width: 100%; border-radius: 6px; }
+@media (max-width: 700px) { .sync-pair { grid-template-columns: 1fr; } }
+.place { font-weight: 600; }
+main select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; }

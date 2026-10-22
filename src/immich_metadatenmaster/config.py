@@ -32,6 +32,7 @@ ENV_NAMES = {
     "map_tile_url": "MAP_TILE_URL",
     "map_attribution": "MAP_ATTRIBUTION",
     "geocoder_url": "GEOCODER_URL",
+    "place_names": "PLACE_NAMES",
 }
 
 # Text settings for which "" is a real value; for the others "" means "use the default".
@@ -79,6 +80,8 @@ class Settings:
     map_attribution: str = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     # Address search on the map (a Photon geocoder). Empty switches it off.
     geocoder_url: str = "https://photon.komoot.io"
+    # Show place names next to location suggestions (asks the geocoder about their rounded positions).
+    place_names: bool = True
 
     @property
     def configured(self) -> bool:

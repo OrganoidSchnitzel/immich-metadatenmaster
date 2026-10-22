@@ -60,3 +60,29 @@ def test_errors():
     down = httpx.MockTransport(lambda r: httpx.Response(503))
     with pytest.raises(GeocodeError, match="503"):
         search("https://photon.test", "Zugspitze", transport=down)
+
+
+def test_place_label():
+    from immich_metadatenmaster.geocode import place_label
+    hut = {"name": "Höllentalangerhütte", "type": "house", "city": "Grainau", "country": "Deutschland"}
+    assert place_label(hut) == "Grainau, Deutschland"  # a house name is not a place
+    assert place_label({**hut, "type": "other"}) == "Höllentalangerhütte, Grainau"
+    assert place_label({"name": "Bayern", "type": "state", "country": "Deutschland"}) == "Bayern, Deutschland"
+    assert place_label({}) == ""
+
+
+def test_reverse():
+    from immich_metadatenmaster.geocode import reverse
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"features": [{"properties": {"name": "Zugspitze", "type": "other",
+                                                                      "county": "Garmisch-Partenkirchen"}}]})
+
+    assert reverse("https://photon.test", 47.42111, 10.98531, lang="de", transport=httpx.MockTransport(handler)) \
+        == "Zugspitze, Garmisch-Partenkirchen"
+    q = calls[0].url.params
+    assert calls[0].url.path == "/reverse" and q["lat"] == "47.42111" and q["lang"] == "de"
+    empty = httpx.MockTransport(lambda r: httpx.Response(200, json={"features": []}))
+    assert reverse("https://photon.test", 0.5, 0.5, transport=empty) == ""

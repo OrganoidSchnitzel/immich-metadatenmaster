@@ -67,6 +67,8 @@ class GeoOptions:
     use_photo_tz: bool = True
     # Added to the camera's time to get the real time (e.g. 3600 if the camera was an hour behind).
     offset_s: int = 0
+    # The same per camera (by its name, e.g. "Canon EOS 80D"); cameras not listed use offset_s.
+    camera_offsets: dict[str, int] = field(default_factory=dict)
     tolerance_min: float = 10
     max_gap_min: float = 15
     use_nearby: bool = True
@@ -74,6 +76,9 @@ class GeoOptions:
     use_siblings: bool = True
     # Also list photos that already have a location (to correct a wrong one on the map).
     include_located: bool = False
+
+    def offset_for(self, camera: str) -> int:
+        return self.camera_offsets.get(camera, self.offset_s) if camera else self.offset_s
 
     def to_dict(self) -> dict[str, Any]:
         return {**{k: v for k, v in self.__dict__.items() if k not in {"start", "end"}},
@@ -230,7 +235,7 @@ class GeoTagger:
         cam_tz = ZoneInfo(opts.camera_tz)
         tol = timedelta(minutes=opts.tolerance_min)
         max_gap = timedelta(minutes=opts.max_gap_min)
-        offset = timedelta(seconds=opts.offset_s)
+        largest_offset = timedelta(seconds=max([abs(opts.offset_s), *map(abs, opts.camera_offsets.values())]))
         tracks = self._load_tracks(opts.track_ids) if opts.use_tracks else []
 
         scopes: list[tuple[datetime, datetime]] = [(t.start - tol, t.end + tol) for _, _, t in tracks]
@@ -242,7 +247,7 @@ class GeoTagger:
         if not scopes and not whole_album:
             raise ValueError("Select a GPX track with times, enter a time range, or choose an album.")
         scopes = _merge(scopes)
-        slack = _TZ_SLACK + abs(offset) + tol + timedelta(minutes=opts.nearby_min)
+        slack = _TZ_SLACK + largest_offset + tol + timedelta(minutes=opts.nearby_min)
         fetch = _merge([(a - slack, b + slack) for a, b in scopes])
 
         assets: dict[str, Asset] = {}
@@ -277,7 +282,7 @@ class GeoTagger:
                 by_key.setdefault(sibling_key(a.file_name), []).append(a)
                 with_location.append((t.timestamp(), a))
             elif a.id not in skip:
-                unlocated.append((a, t + offset, t))
+                unlocated.append((a, t + timedelta(seconds=opts.offset_for(a.camera)), t))
         with_location.sort(key=lambda x: x[0])
         located = _Located([ts for ts, _ in with_location], [a for _, a in with_location])
         by_camera: dict[str, _Located] = {}
@@ -287,7 +292,7 @@ class GeoTagger:
                 cam.instants.append(ts)
                 cam.assets.append(a)
 
-        hint = self._shift_hint([(a, t) for a, t, _ in unlocated], tracks, tol, max_gap) if tracks else None
+        hints = self._shift_hints(unlocated, tracks, tol, max_gap) if tracks else []
         candidates = sorted(((a, t, raw) for a, t, raw in unlocated if in_scope(t)), key=lambda x: x[1])
         window = timedelta(minutes=opts.nearby_min)
 
@@ -320,12 +325,13 @@ class GeoTagger:
                 located_listed += 1
 
         self.store.save_suggestions(TABLE, results, replace_all=True)
+        cameras = self._camera_stats(unlocated, candidates, results, opts)
         run = {
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "options": opts.to_dict(),
             "track_ids": [tid for tid, _, _ in tracks],
             "searched": len(assets), "with_location": len(located.assets), "candidates": len(candidates),
-            "suggested": sum(sources.values()), "sources": dict(sources), "hint": hint,
+            "suggested": sum(sources.values()), "sources": dict(sources), "hints": hints, "cameras": cameras,
             "whole_album": whole_album, "located_listed": located_listed,
             "no_location_needed": sum(1 for a in assets.values() if a.id in skip),
             "located": [[round(a.latitude, 6), round(a.longitude, 6)] for a in located.assets[:3000]
@@ -343,12 +349,14 @@ class GeoTagger:
         }
         if looks_like_screenshot(a):
             item["screenshot"] = True
-        if opts.offset_s and correct_time:
+        offset = opts.offset_for(a.camera)
+        if offset and correct_time:
             # The corrected capture time, in the photo's own zone if it has one, else the camera zone.
             own = a.time_zone if opts.use_photo_tz and zone_of(a.time_zone) else None
             zone = zone_of(own) or cam_tz
             item["corrected"] = t.astimezone(zone).isoformat(timespec="milliseconds")
             item["corrected_tz"] = iana_name(own) if own else opts.camera_tz
+            item["offset_s"] = offset
         return item
 
     @staticmethod
@@ -447,19 +455,73 @@ class GeoTagger:
         return "Outside the tracks' time span."
 
     @staticmethod
-    def _shift_hint(unlocated: list[tuple[Asset, datetime]], tracks: list[tuple[str, str, Track]],
-                    tol: timedelta, max_gap: timedelta) -> dict[str, Any] | None:
-        """If many more photos fit the tracks with the clock shifted by whole hours, the camera's time zone
-        (or summer time) is probably set wrong."""
+    def _shift_hints(unlocated: list[tuple[Asset, datetime, datetime]], tracks: list[tuple[str, str, Track]],
+                     tol: timedelta, max_gap: timedelta) -> list[dict[str, Any]]:
+        """Per camera: if many more of its photos fit the tracks with its clock shifted by whole hours, its
+        time zone (or summer time) is probably set wrong."""
         def fits(t: datetime) -> bool:
             return any(track.covers(t, tol) and track.position_at(t, tolerance=tol, max_gap=max_gap)
                        for _, _, track in tracks)
 
-        counts = {h: sum(1 for _, t in unlocated if fits(t + timedelta(hours=h))) for h in range(-14, 15)}
-        best = max(counts, key=lambda h: (counts[h], -abs(h)))
-        if best != 0 and counts[best] >= 3 and counts[best] >= 1.5 * counts[0] + 1:
-            return {"hours": best, "matches": counts[best], "current": counts[0]}
-        return None
+        by_camera: dict[str, list[datetime]] = {}
+        for a, t, _ in unlocated:
+            by_camera.setdefault(a.camera, []).append(t)
+        hints = []
+        for camera, times in sorted(by_camera.items()):
+            counts = {h: sum(1 for t in times if fits(t + timedelta(hours=h))) for h in range(-14, 15)}
+            best = max(counts, key=lambda h: (counts[h], -abs(h)))
+            if best != 0 and counts[best] >= 3 and counts[best] >= 1.5 * counts[0] + 1:
+                hints.append({"camera": camera, "hours": best, "matches": counts[best], "current": counts[0]})
+        return hints
+
+    @staticmethod
+    def _camera_stats(unlocated: list[tuple[Asset, datetime, datetime]],
+                      candidates: list[tuple[Asset, datetime, datetime]],
+                      results: dict[str, dict[str, Any]], opts: GeoOptions) -> list[dict[str, Any]]:
+        """The cameras of the photos without a location near the searched time, with a sample of their photos
+        (for working out a clock offset, also when the offset is so wrong that none is in the time span)."""
+        stats: dict[str, dict[str, Any]] = {}
+        for a, t, raw in sorted(unlocated, key=lambda x: x[2]):
+            s = stats.setdefault(a.camera, {"camera": a.camera, "without_location": 0, "in_scope": 0, "suggested": 0,
+                                            "offset_s": opts.offset_for(a.camera), "photos": []})
+            s["without_location"] += 1
+            if len(s["photos"]) < 100:
+                s["photos"].append({"id": a.id, "file_name": a.file_name, "type": a.type,
+                                    "local": a.local_datetime.isoformat() if a.local_datetime else None,
+                                    "instant": raw.isoformat()})
+        for a, _, _ in candidates:
+            stats[a.camera]["in_scope"] += 1
+            if results.get(a.id, {}).get("status") == "ok":
+                stats[a.camera]["suggested"] += 1
+        return sorted(stats.values(), key=lambda s: (-s["without_location"], s["camera"]))
+
+    # --- clock offsets --------------------------------------------------------------------------
+
+    def clock_candidates(self, asset_id: str, *, camera_tz: str, use_photo_tz: bool = True, hours: float = 6,
+                         limit: int = 200) -> dict[str, Any]:
+        """Photos of other cameras (e.g. a phone) taken around the time this photo's camera shows, to pick the
+        one of the same moment: the difference of their times is the camera's clock offset."""
+        tz = ZoneInfo(camera_tz)
+        a = self.immich.asset(asset_id)
+        t = photo_instant(a, tz, use_photo_tz)
+        if t is None:
+            raise ValueError("This photo has no date.")
+        window = timedelta(hours=hours)
+        others = []
+        for o in self.immich.assets_taken_between(t - window - _TZ_SLACK, t + window + _TZ_SLACK):
+            if o.id == a.id or not o.shown or o.camera == a.camera:
+                continue
+            ot = photo_instant(o, tz, use_photo_tz)
+            if ot is None or abs(ot - t) > window:
+                continue
+            others.append({"id": o.id, "file_name": o.file_name, "camera": o.camera, "type": o.type,
+                           "local": o.local_datetime.isoformat() if o.local_datetime else None,
+                           "has_time_zone": bool(o.time_zone), "delta_s": round((ot - t).total_seconds())})
+        # In time order, so the user can scan for the same moment however far off the clock is.
+        others.sort(key=lambda x: x["delta_s"])
+        photo = {"id": a.id, "file_name": a.file_name, "camera": a.camera,
+                 "local": a.local_datetime.isoformat() if a.local_datetime else None}
+        return {"photo": photo, "others": others[:limit]}
 
     # --- reviewing --------------------------------------------------------------------------
 
@@ -530,8 +592,10 @@ class GeoTagger:
                 label, tag = SOURCES.get(source, (source, f"Location/{source}"))
                 self.history.log("location", source, f"Location: {label}", self._tag_value(tag), changes)
             if times:
-                offset = (self.run() or {}).get("options", {}).get("offset_s", 0)
-                self.history.log("date", "clock", f"Clock corrected by {_format_offset(offset)}", None, times)
+                offsets = {stored[aid].get("offset_s", 0) for aid, *_ in times}
+                label = (f"Clock corrected by {_format_offset(offsets.pop())}" if len(offsets) == 1
+                         else f"Clock corrected ({len(offsets)} different offsets)")
+                self.history.log("date", "clock", label, None, times)
             for source, ids in done.items():
                 tag_assets(self.immich, self._tag_value(SOURCES.get(source, ("", f"Location/{source}"))[1]), ids)
             self.store.delete_suggestions(TABLE, [aid for ids in done.values() for aid in ids])

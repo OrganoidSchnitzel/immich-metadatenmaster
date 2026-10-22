@@ -443,7 +443,9 @@ function formRequest() {
   const offset = parseOffset(f.offset.value);
   if (Number.isNaN(offset)) throw new Error("Write the clock offset like +1:00:00, -0:30 or 90 (minutes).");
   savePrefs(Object.fromEntries(PREF_FIELDS.map(n => [n, f[n].type === "checkbox" ? f[n].checked : f[n].value])));
+  const cameraOffsets = Object.fromEntries(Object.entries(savedOffsets()).filter(([k, v]) => k && Number.isFinite(v)));
   return {
+    camera_offsets: cameraOffsets,
     track_ids: tracks.filter(t => isTicked(t.id)).map(t => t.id),
     use_tracks: f.use_tracks.checked,
     start: f.start.value || null,
@@ -520,6 +522,7 @@ function suggestionHtml(it) {
   return `<div class="badge suggest src-${esc(it.source)}">
       <div><strong>${esc(SOURCE_LABEL[it.source] || it.source)}</strong> · <span class="conf-${esc(it.confidence)}">${esc(it.confidence)} confidence</span></div>
       <div>${detail}</div>
+      ${placeHtml(it)}
       <div class="muted">${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}${ele}</div>${replaces}
     </div>`;
 }
@@ -537,23 +540,11 @@ function render() {
     `Search of ${esc(new Date(run.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }))}: ${run.searched} photos looked at, ${run.with_location} already had a location, ` +
     `${run.candidates} without one ${run.whole_album ? "in the album" : "in the time span"}, <strong>${run.suggested} with a suggestion</strong>${src ? ` (${esc(src)})` : ""}.` +
     (run.no_location_needed ? ` ${run.no_location_needed} skipped as “no location needed”.` : "") +
-    (opts.offset_s ? ` Clock offset ${esc(formatOffset(opts.offset_s))}.` : "") +
+    offsetsSummary(opts) +
     (pendingCount() < run.candidates ? ` ${run.candidates - pendingCount()} already written, discarded or marked.` : "");
 
-  const hint = document.getElementById("hint");
-  if (run.hint) {
-    const h = run.hint;
-    const newOffset = (opts.offset_s || 0) + h.hours * 3600;
-    hint.innerHTML = `Only ${h.current} photo${h.current === 1 ? "" : "s"} fit the tracks in time, but ${h.matches} would with the
-      clock shifted by <strong>${h.hours > 0 ? "+" : ""}${h.hours} h</strong>.
-      If the <em>camera time zone</em> above is wrong, correct it and search again.
-      If the camera's clock itself was off (e.g. still on winter time):
-      <button type="button" id="use-hint" data-offset="${newOffset}">Search again with offset ${esc(formatOffset(newOffset))}</button>`;
-    hint.hidden = false;
-  } else {
-    hint.hidden = true;
-  }
-  document.getElementById("fix-time-opt").hidden = !opts.offset_s;
+  renderCameras();
+  document.getElementById("fix-time-opt").hidden = !items.some(it => it.corrected);
 
   const cams = [...new Set(items.map(it => it.camera).filter(Boolean))].sort();
   const current = cameraFilter.value;
@@ -585,6 +576,7 @@ function render() {
   }
   drawSuggestions();
   updateSelection();
+  loadPlaceNames();
 }
 
 function dayOf(it) { return (it.corrected || it.local || it.instant || "").slice(0, 10) || "unknown"; }
@@ -709,12 +701,219 @@ document.querySelectorAll("[data-select]").forEach(btn => btn.addEventListener("
 
 cameraFilter.addEventListener("change", render);
 
-document.getElementById("hint").addEventListener("click", (ev) => {
-  const btn = ev.target.closest("#use-hint");
-  if (!btn) return;
-  form.elements.offset.value = formatOffset(Number(btn.dataset.offset));
-  find();
+// --- camera clocks -------------------------------------------------------------------------
+
+function savedOffsets() { return loadPrefs().cameraOffsets || {}; }
+
+function saveOffset(camera, seconds) {
+  const all = savedOffsets();
+  if (seconds === null) delete all[camera]; else all[camera] = seconds;
+  savePrefs({ cameraOffsets: all });
+}
+
+function offsetsSummary(opts) {
+  const parts = Object.entries(opts.camera_offsets || {}).filter(([, v]) => v).map(([k, v]) => `${k} ${formatOffset(v)}`);
+  if (opts.offset_s) parts.push(`${parts.length ? "other cameras" : "all cameras"} ${formatOffset(opts.offset_s)}`);
+  return parts.length ? ` Clock offsets: ${esc(parts.join(", "))}.` : "";
+}
+
+function renderCameras() {
+  const box = document.getElementById("cameras");
+  const cams = (run && run.cameras) || [];
+  box.hidden = !cams.length;
+  if (!cams.length) return;
+  const hints = Object.fromEntries((run.hints || []).map(h => [h.camera, h]));
+  const saved = savedOffsets();
+  const nHints = Object.keys(hints).length;
+  document.getElementById("cameras-note").textContent =
+    nHints ? `· ${nHints} camera${nHints === 1 ? "" : "s"} may have a wrong clock` : `· ${cams.length} camera${cams.length === 1 ? "" : "s"}`;
+  if (nHints) box.open = true;
+  document.getElementById("camera-rows").innerHTML = cams.map(c => {
+    const named = Boolean(c.camera);
+    const value = named && saved[c.camera] !== undefined ? saved[c.camera] : c.offset_s;
+    const h = hints[c.camera];
+    const shift = h ? `${h.hours > 0 ? "+" : ""}${h.hours} h` : "";
+    return `<tr data-camera="${esc(c.camera)}">
+      <td><strong>${esc(c.camera || "Unknown camera")}</strong>
+        <div class="muted">${c.without_location} without a location nearby · ${c.in_scope} in the time span ·
+          ${c.suggested} with a suggestion</div>
+        ${h ? `<div class="camera-hint">⚠ ${h.matches} of its photos would fit the tracks with the clock shifted by
+          <strong>${shift}</strong> (now ${h.current}). Wrong time zone or summer time?
+          <button type="button" class="link" data-shift="${h.hours}">Shift by ${shift} and search again</button></div>` : ""}</td>
+      <td>${named ? `<input class="cam-offset" value="${esc(formatOffset(value))}" size="9" aria-label="Clock offset">`
+        : `<span class="muted" title="Photos without a camera name use the clock offset in the form">${esc(formatOffset(value))}</span>`}</td>
+      <td>${named && c.photos.length ? `<button type="button" data-sync>Sync with another camera…</button>` : ""}</td>
+    </tr>`;
+  }).join("");
+}
+
+const cameraRows = document.getElementById("camera-rows");
+
+cameraRows.addEventListener("change", (ev) => {
+  const input = ev.target.closest(".cam-offset");
+  if (!input) return;
+  const camera = input.closest("tr").dataset.camera;
+  const text = input.value.trim();
+  const seconds = text ? parseOffset(text) : null;
+  input.classList.toggle("invalid", Number.isNaN(seconds));
+  if (!Number.isNaN(seconds)) saveOffset(camera, seconds);
 });
+
+cameraRows.addEventListener("click", (ev) => {
+  const row = ev.target.closest("tr");
+  if (!row) return;
+  const camera = row.dataset.camera;
+  if (ev.target.closest("[data-shift]")) {
+    const input = row.querySelector(".cam-offset");
+    const current = parseOffset(input.value) || 0;
+    saveOffset(camera, current + Number(ev.target.closest("[data-shift]").dataset.shift) * 3600);
+    find();
+  } else if (ev.target.closest("[data-sync]")) {
+    openSync(camera);
+  }
+});
+
+document.getElementById("search-again").addEventListener("click", () => find());
+
+// --- working out a clock offset from two photos of the same moment ----------------------------
+
+const syncDialog = document.getElementById("sync");
+const syncBody = document.getElementById("sync-body");
+let syncCamera = null;
+
+function syncStep(title, text, body) {
+  document.getElementById("sync-title").textContent = title;
+  document.getElementById("sync-text").innerHTML = text;
+  syncBody.innerHTML = body;
+}
+
+function photoButton(p, caption) {
+  return `<button type="button" class="sync-photo" data-pick="${esc(p.id)}" title="${esc(p.file_name)}">
+    <img src="/thumb/${esc(p.id)}" alt="" loading="lazy"><span>${caption}</span></button>`;
+}
+
+function openSync(camera) {
+  const cam = run.cameras.find(c => c.camera === camera);
+  syncCamera = { name: camera, photo: null };
+  syncStep(`Sync the clock of ${camera}`,
+    `<strong>1.</strong> Pick a photo of this camera that shows a moment you also photographed with another camera,
+     e.g. your phone (the phone's clock is set automatically and is right).`,
+    `<div class="sync-grid">${cam.photos.map(p => photoButton(p, esc(fmtLocal(p.local)))).join("")}</div>`);
+  syncDialog.showModal();
+}
+
+function describeDelta(seconds) {
+  const abs = Math.abs(seconds);
+  const h = Math.floor(abs / 3600), m = Math.floor(abs % 3600 / 60), s = abs % 60;
+  const text = [h ? `${h} h` : "", m ? `${m} min` : "", !h && s ? `${s} s` : ""].filter(Boolean).join(" ") || "0 s";
+  return seconds === 0 ? "the same time" : `${text} ${seconds > 0 ? "later" : "earlier"}`;
+}
+
+async function pickCameraPhoto(id) {
+  const cam = run.cameras.find(c => c.camera === syncCamera.name);
+  const photo = cam.photos.find(p => p.id === id);
+  syncCamera.photo = photo;
+  syncStep(`Sync the clock of ${syncCamera.name}`, "Looking for photos of other cameras taken around then…", "");
+  try {
+    const params = new URLSearchParams({ asset_id: id, camera_tz: cameraTz(), use_photo_tz: form.elements.use_photo_tz.checked });
+    const r = await api("GET", `/api/geo/clock-candidates?${params}`);
+    syncCamera.others = r.others;
+    renderReferences(id, photo, r.others.some(o => o.has_time_zone));
+  } catch (e) {
+    syncStep(`Sync the clock of ${syncCamera.name}`, `<span class="err">${esc(e.message)}</span>`, `<button type="button" data-back>← Back</button>`);
+  }
+}
+
+/** Step 2: the photos of other cameras around then, in time order; phones (clock set automatically) first. */
+function renderReferences(id, photo, phonesOnly) {
+  const others = syncCamera.others.filter(o => !phonesOnly || o.has_time_zone);
+  const anyPhones = syncCamera.others.some(o => o.has_time_zone);
+  syncStep(`Sync the clock of ${syncCamera.name}`,
+    `<strong>2.</strong> Which of these photos shows the same moment? Under each: how much later or earlier it was
+     taken, by the clocks as they were.`,
+    `<div class="sync-pair">
+      <figure><img src="/thumb/${esc(id)}?size=preview" alt=""><figcaption>${esc(photo.file_name)} ·
+        ${esc(fmtLocal(photo.local))}</figcaption></figure>
+      <div>
+        ${anyPhones ? `<label class="check"><input type="checkbox" data-phones ${phonesOnly ? "checked" : ""}>
+          Only photos with an automatically set clock (phones)</label>` : ""}
+        <div class="sync-grid">${others.map(o => photoButton(o,
+          `${esc(o.camera || "?")}${o.has_time_zone ? " 📱" : ""}<br>${esc(fmtLocal(o.local))}<br>
+           <strong>${esc(describeDelta(o.delta_s))}</strong>`)).join("")
+          || `<p class="muted">No photos of other cameras within 6 hours.</p>`}</div>
+      </div>
+    </div>
+    <button type="button" data-back>← Pick another photo</button>`);
+  syncBody.querySelector("[data-phones]")?.addEventListener("change", (ev) => renderReferences(id, photo, ev.target.checked));
+}
+
+function pickReference(id) {
+  const ref = syncCamera.others.find(o => o.id === id);
+  const offset = ref.delta_s;
+  syncStep(`Sync the clock of ${syncCamera.name}`,
+    `The other camera's photo was taken <strong>${esc(describeDelta(offset))}</strong>, so the clock of
+     ${esc(syncCamera.name)} is off by <strong>${esc(formatOffset(offset))}</strong>.`,
+    `<div class="row"><button type="button" class="primary" data-use="${offset}">Use ${esc(formatOffset(offset))} for ${esc(syncCamera.name)}</button>
+      <button type="button" data-back>← Pick another pair</button></div>`);
+}
+
+syncBody.addEventListener("click", (ev) => {
+  const pick = ev.target.closest("[data-pick]");
+  if (pick) {
+    if (!syncCamera.photo) pickCameraPhoto(pick.dataset.pick); else pickReference(pick.dataset.pick);
+    return;
+  }
+  if (ev.target.closest("[data-back]")) { openSync(syncCamera.name); return; }
+  const use = ev.target.closest("[data-use]");
+  if (use) {
+    saveOffset(syncCamera.name, Number(use.dataset.use));
+    syncDialog.close();
+    renderCameras();
+    const btn = document.getElementById("search-again");
+    btn.classList.add("pulse");
+    btn.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+});
+
+// --- place names ---------------------------------------------------------------------------
+
+const placeNamesOn = Boolean(app.dataset.placeNames);
+const placeNames = new Map();
+let placeLoading = false;
+
+function placeKey(lat, lon) { return `${lat.toFixed(3)},${lon.toFixed(3)}`; }
+
+function placeHtml(it) {
+  if (!placeNamesOn || it.status !== "ok") return "";
+  const key = placeKey(it.lat, it.lon);
+  const name = placeNames.get(key);
+  return `<div class="place" data-place="${key}">${name === undefined ? "…" : name ? `📍 ${esc(name)}` : ""}</div>`;
+}
+
+/** Fill in the names of the places of the shown suggestions, a few at a time (they are cached on the server). */
+async function loadPlaceNames() {
+  if (!placeNamesOn || placeLoading) return;
+  placeLoading = true;
+  try {
+    for (let round = 0; round < 100; round++) {
+      const keys = [...new Set(visibleItems().filter(it => it.status === "ok").map(it => placeKey(it.lat, it.lon)))]
+        .filter(k => !placeNames.has(k));
+      if (!keys.length) break;
+      const r = await api("POST", "/api/place-names", { keys, lang: navigator.language || "en" });
+      for (const [k, v] of Object.entries(r.names)) placeNames.set(k, v);
+      if (!r.pending || r.error) keys.forEach(k => { if (!placeNames.has(k)) placeNames.set(k, ""); });
+      for (const el of document.querySelectorAll("[data-place]")) {
+        const name = placeNames.get(el.dataset.place);
+        if (name !== undefined) el.textContent = name ? `📍 ${name}` : "";
+      }
+      if (r.error || !r.enabled) break;
+    }
+  } catch (e) {
+    /* place names are a nicety */
+  } finally {
+    placeLoading = false;
+  }
+}
 
 placeBtn.addEventListener("click", () => setPlacing(!placing));
 
@@ -759,7 +958,7 @@ applyBtn.addEventListener("click", async () => {
   const fixTime = !document.getElementById("fix-time-opt").hidden && document.getElementById("fix-time").checked;
   const msg = `Write the location of ${ids.length} photo${ids.length === 1 ? "" : "s"} to Immich?` +
     (replacing ? ` ${replacing} of them already have a location, which is replaced.` : "") +
-    (fixTime ? `\n\nTheir capture times are corrected by ${formatOffset(run.options.offset_s)} as well.` : "") +
+    (fixTime ? "\n\nTheir capture times are corrected by their camera's clock offset as well." : "") +
     "\n\nYou can undo this in History.";
   if (!confirm(msg)) return;
   const resultEl = document.getElementById("apply-result");

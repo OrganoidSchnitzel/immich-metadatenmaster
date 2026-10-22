@@ -313,3 +313,39 @@ def test_undo_cannot_be_cancelled(client, batch):
     job = client.post(f"/api/history/{client.get('/api/history').json()[0]['id']}/undo").json()
     assert not job["cancellable"]
     assert client.post(f"/api/jobs/{job['id']}/cancel").status_code == 400
+
+
+def test_clock_candidates_and_camera_offsets_via_web(client, fake):
+    client.post("/api/tracks", params={"file_name": "hike.gpx"}, content=HIKE)
+    cam = fake.add_photo("IMG_0001.CR2", "2024-07-01T09:50:00")
+    fake.add_photo("PXL_1.jpg", "2024-07-01T10:20:00", tz="Europe/Berlin", make="Google", model="Pixel 8",
+                   lat=47.0, lon=11.0)
+    r = client.get("/api/geo/clock-candidates", params={"asset_id": cam, "camera_tz": "Europe/Berlin"}).json()
+    assert r["others"][0]["delta_s"] == 1800
+    assert client.get("/api/geo/clock-candidates", params={"asset_id": cam, "camera_tz": "Mars"}).status_code == 400
+    job = wait(client, client.post("/api/geo/find", json={
+        "camera_tz": "Europe/Berlin", "use_nearby": False, "camera_offsets": {"Canon EOS 80D": 1800}}).json())
+    assert job["status"] == "done"
+    s = client.get("/api/geo/suggestions").json()["items"][0]
+    assert s["id"] == cam and s["offset_s"] == 1800 and s["lat"] == pytest.approx(47.04)
+
+
+def test_place_names(guesser):
+    import httpx
+    calls = []
+
+    def photon(request):
+        calls.append(request)
+        return httpx.Response(200, json={"features": [{"properties": {"name": "Ort", "type": "city"}}]})
+
+    keys = [f"47.{i:03d},11.000" for i in range(20)]
+    with TestClient(create_app(guesser, geocode_transport=httpx.MockTransport(photon)),
+                    headers={"X-Metadatenmaster": "1"}) as c:
+        r = c.post("/api/place-names", json={"keys": keys + ["nonsense"], "lang": "de-DE"}).json()
+        assert len(r["names"]) == 15 and r["pending"] == 5 and set(r["names"].values()) == {"Ort"}
+        r = c.post("/api/place-names", json={"keys": keys, "lang": "de-DE"}).json()
+        assert len(r["names"]) == 20 and r["pending"] == 0
+        assert len(calls) == 20  # cached ones are not asked again
+        guesser.settings = guesser.settings.with_values({"place_names": False})
+    with TestClient(create_app(guesser), headers={"X-Metadatenmaster": "1"}) as c:
+        assert c.post("/api/place-names", json={"keys": keys}).json()["enabled"] is False

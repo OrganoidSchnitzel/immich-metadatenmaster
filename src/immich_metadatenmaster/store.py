@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS name_date (
     data TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS version_date (
+    asset_id TEXT PRIMARY KEY,
+    data TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS geo_suggestion (
     asset_id TEXT PRIMARY KEY,
     data TEXT NOT NULL,
@@ -72,6 +77,11 @@ CREATE TABLE IF NOT EXISTS change (
 CREATE TABLE IF NOT EXISTS no_location (
     asset_id TEXT PRIMARY KEY,     -- marked by the user: a location makes no sense (screenshots, ...)
     file_name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS place_name (
+    key TEXT PRIMARY KEY,          -- "lat,lon" rounded to 3 decimals, plus the language
+    name TEXT NOT NULL,            -- "" if the geocoder knows no name there
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS kv (
@@ -314,6 +324,21 @@ class Store:
                                     "ORDER BY created_at DESC, file_name").fetchall()
         return [{"id": r[0], "file_name": r[1], "created_at": r[2]} for r in rows]
 
+    # --- place names (reverse geocoding cache) ----------------------------------------------
+
+    def place_names(self, keys: list[str]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        with self._lock:
+            for chunk in _chunks(keys):
+                marks = ",".join("?" * len(chunk))
+                out.update(self._db.execute(f"SELECT key, name FROM place_name WHERE key IN ({marks})",
+                                            chunk).fetchall())
+        return out
+
+    def save_place_name(self, key: str, name: str) -> None:
+        with self._lock, self._db:
+            self._db.execute("INSERT OR REPLACE INTO place_name VALUES (?, ?, ?)", (key, name, _now()))
+
     # --- small values -----------------------------------------------------------------------
 
     def get_value(self, key: str) -> Any:
@@ -335,7 +360,7 @@ class Store:
         return out
 
 
-_SUGGESTION_TABLES = {"name_date", "geo_suggestion"}
+_SUGGESTION_TABLES = {"name_date", "geo_suggestion", "version_date"}
 
 
 def _check_table(table: str) -> None:

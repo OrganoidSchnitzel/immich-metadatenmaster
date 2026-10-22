@@ -1,4 +1,5 @@
-"""Address search for the map, via a Photon geocoder (https://photon.komoot.io or a self-hosted one).
+"""Address search and place names for the map, via a Photon geocoder (https://photon.komoot.io or a
+self-hosted one).
 
 The server asks Photon, not the browser, so the geocoder can be changed in one place. Coordinates
 typed or pasted directly ("47.4211, 10.9853", e.g. from Google Maps) are understood without asking.
@@ -47,6 +48,49 @@ def _label(p: dict[str, Any]) -> tuple[str, str]:
     return name, ", ".join(seen)
 
 
+def _get(base_url: str, path: str, params: dict[str, Any], transport: httpx.BaseTransport | None) -> Any:
+    try:
+        with httpx.Client(timeout=10, transport=transport, headers={"User-Agent": _USER_AGENT}) as client:
+            resp = client.get(f"{base_url.rstrip('/')}{path}", params=params)
+    except httpx.HTTPError as exc:
+        raise GeocodeError(f"The address search is not reachable: {exc}") from exc
+    if resp.status_code >= 400:
+        raise GeocodeError(f"The address search answered {resp.status_code}.")
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise GeocodeError("The address search sent an invalid answer.") from exc
+
+
+def _lang(lang: str | None) -> str | None:
+    return lang.lower()[:2] if lang and lang.lower()[:2] in PHOTON_LANGUAGES else None
+
+
+def place_label(p: dict[str, Any]) -> str:
+    """A short name for where a point is: "Höllentalangerhütte, Grainau" or "Garmisch-Partenkirchen, Deutschland"."""
+    parts: list[str] = []
+    if p.get("name") and p.get("type") not in {"house", "street"}:
+        parts.append(p["name"])
+    town = p.get("city") or p.get("locality") or p.get("district") or p.get("county")
+    if town and town not in parts:
+        parts.append(town)
+    if not parts and p.get("state"):
+        parts.append(p["state"])
+    if len(parts) < 2 and p.get("country") and p["country"] not in parts:
+        parts.append(p["country"])
+    return ", ".join(parts[:2])
+
+
+def reverse(base_url: str, lat: float, lon: float, *, lang: str | None = None,
+            transport: httpx.BaseTransport | None = None) -> str:
+    """The name of the place at a point ("" if there is none)."""
+    params: dict[str, Any] = {"lat": round(lat, 5), "lon": round(lon, 5), "limit": 1}
+    if (code := _lang(lang)) is not None:
+        params["lang"] = code
+    features = (_get(base_url, "/reverse", params, transport) or {}).get("features") or []
+    return place_label(features[0].get("properties") or {}) if features else ""
+
+
 def search(base_url: str, query: str, *, lang: str | None = None, near: tuple[float, float] | None = None,
            limit: int = 8, transport: httpx.BaseTransport | None = None) -> list[dict[str, Any]]:
     """Places matching `query`, best first: {name, detail, lat, lon, bounds, kind}."""
@@ -60,21 +104,11 @@ def search(base_url: str, query: str, *, lang: str | None = None, near: tuple[fl
     if not base_url:
         raise GeocodeError("Address search is switched off in the settings.")
     params: dict[str, Any] = {"q": query[:200], "limit": limit}
-    if lang and lang.lower()[:2] in PHOTON_LANGUAGES:
-        params["lang"] = lang.lower()[:2]
+    if (code := _lang(lang)) is not None:
+        params["lang"] = code
     if near is not None:
         params["lat"], params["lon"] = round(near[0], 4), round(near[1], 4)
-    try:
-        with httpx.Client(timeout=10, transport=transport, headers={"User-Agent": _USER_AGENT}) as client:
-            resp = client.get(f"{base_url.rstrip('/')}/api", params=params)
-    except httpx.HTTPError as exc:
-        raise GeocodeError(f"The address search is not reachable: {exc}") from exc
-    if resp.status_code >= 400:
-        raise GeocodeError(f"The address search answered {resp.status_code}.")
-    try:
-        features = resp.json().get("features") or []
-    except ValueError as exc:
-        raise GeocodeError("The address search sent an invalid answer.") from exc
+    features = (_get(base_url, "/api", params, transport) or {}).get("features") or []
 
     out = []
     for f in features:

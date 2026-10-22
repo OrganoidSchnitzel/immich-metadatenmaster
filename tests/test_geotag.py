@@ -121,8 +121,32 @@ def test_time_zone_hint(fake, geo, tour):
     for i, local in enumerate(["10:02", "10:30", "11:55"]):
         fake.add_photo(f"IMG_{i}.CR2", f"2024-07-01T{local}:00")
     run = geo.find(GeoOptions(camera_tz="UTC"))  # wrong: the camera showed Berlin time
-    assert run["hint"] == {"hours": -2, "matches": 3, "current": 1}
-    assert geo.find(berlin())["hint"] is None
+    assert run["hints"] == [{"camera": "Canon EOS 80D", "hours": -2, "matches": 3, "current": 1}]
+    assert geo.find(berlin())["hints"] == []
+
+
+def test_offset_per_camera(fake, geo, tour):
+    # The Canon ran 30 min slow, the GoPro 2 h fast (still on another time zone).
+    canon = fake.add_photo("IMG_0001.CR2", "2024-07-01T10:05:00")
+    gopro = fake.add_photo("GOPR0001.JPG", "2024-07-01T12:35:00", make="GoPro", model="HERO9 Black")
+    run = geo.find(berlin(camera_offsets={"Canon EOS 80D": 1800, "GoPro HERO9 Black": -7200}))
+    s = geo.suggestions()
+    assert s[canon]["lat"] == pytest.approx(47.035) and s[canon]["offset_s"] == 1800
+    assert s[gopro]["lat"] == pytest.approx(47.035) and s[gopro]["corrected"] == "2024-07-01T10:35:00.000+02:00"
+    assert {c["camera"]: (c["in_scope"], c["suggested"], c["offset_s"]) for c in run["cameras"]} == {
+        "Canon EOS 80D": (1, 1, 1800), "GoPro HERO9 Black": (1, 1, -7200)}
+    geo.apply([canon, gopro], fix_time=True)
+    assert geo.store.change_batches()[0]["label"] == "Clock corrected (2 different offsets)"
+
+
+def test_camera_stats_include_photos_outside_the_time_span(fake, geo, tour):
+    # All photos of this camera are outside the track because its clock is 3 h off: the camera is still
+    # listed, with photos to work out the offset from.
+    for i in range(3):
+        fake.add_photo(f"DSC_{i}.JPG", f"2024-07-01T{13 + i // 2}:{i * 10:02d}:00", make="Sony", model="ILCE-7M3")
+    run = geo.find(berlin())
+    sony = next(c for c in run["cameras"] if c["camera"] == "Sony ILCE-7M3")
+    assert sony["without_location"] == 3 and sony["in_scope"] == 0 and len(sony["photos"]) == 3
 
 
 def test_route_without_times_needs_times(geo, fake):
@@ -341,3 +365,16 @@ def test_known_date_records_history(fake, guesser):
     change = batch["changes"][0]
     assert change["file_name"] == "scan.jpg" and change["new"]["date"].startswith("1987-06-15T12:00")
     assert change["old"]["taken_at"] == "2026-09-01T10:00:00+00:00"
+
+
+def test_clock_candidates(fake, geo):
+    cam = fake.add_photo("IMG_0001.CR2", "2024-07-01T10:05:00")
+    phone = fake.add_photo("PXL_1.jpg", "2024-07-01T10:35:00", tz="Europe/Berlin", make="Google", model="Pixel 8")
+    fake.add_photo("PXL_2.jpg", "2024-07-01T13:00:00", tz="Europe/Berlin", make="Google", model="Pixel 8")
+    fake.add_photo("PXL_far.jpg", "2024-07-02T10:00:00", tz="Europe/Berlin", make="Google", model="Pixel 8")
+    fake.add_photo("IMG_0002.CR2", "2024-07-01T10:06:00")  # same camera: not a reference
+    r = geo.clock_candidates(cam, camera_tz="Europe/Berlin")
+    assert r["photo"]["file_name"] == "IMG_0001.CR2"
+    # In time order (the user scans them for the same moment).
+    assert [(o["file_name"], o["delta_s"]) for o in r["others"]] == [("PXL_1.jpg", 1800), ("PXL_2.jpg", 10500)]
+    assert r["others"][0]["id"] == phone and r["others"][0]["has_time_zone"]
