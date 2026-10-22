@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -145,7 +145,7 @@ def fit_calibration(samples: list[Sample], *, sigma_scale: float = 1.0, backend:
 
     cal = Calibration(prior.knots, bias.round(3).tolist(), sigma.round(3).tolist(),
                       person_bias={k: round(v, 3) for k, v in person_bias.items()}, samples=len(samples),
-                      backend=backend, created_at=datetime.now().isoformat(timespec="seconds"))
+                      backend=backend, created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
     corrected = est - np.array([cal.bias_at(np.array(s.true_age), s.person_id) for s in samples]).ravel()
     bins = [

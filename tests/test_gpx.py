@@ -40,6 +40,7 @@ def test_parse_route_without_times():
 @pytest.mark.parametrize("data", [
     b"not xml", b"<kml/>", b'<gpx><trk><trkseg><trkpt lat="1" lon="1"/></trkseg></trk></gpx>',
     b'<!DOCTYPE gpx [<!ENTITY a "b">]><gpx/>',
+    b"<!--" + b" " * 10_000 + b'--><!DOCTYPE gpx [<!ENTITY a "b">]><gpx/>',  # hidden behind a long comment
 ])
 def test_parse_rejects_bad_files(data):
     with pytest.raises(GpxError):

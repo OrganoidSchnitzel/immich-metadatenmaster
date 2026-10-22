@@ -15,7 +15,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from .config import Settings
-from .gpx import ParsedGpx, Track, TrackPoint, distance_m, parse_gpx, simplify, total_distance_m, with_times
+from .gpx import GpxError, ParsedGpx, Track, TrackPoint, distance_m, parse_gpx, simplify, total_distance_m, with_times
 from .history import History, iana_name, zone_of
 from .immich import Asset, ImmichClient
 from .service import tag_assets
@@ -30,14 +30,17 @@ MAX_ASSETS = 20_000
 # Immich treats the clock time of photos without a time zone as UTC, so their stored instant can be
 # off by up to this much; searches are widened accordingly and the exact time is computed here.
 _TZ_SLACK = timedelta(hours=14)
-_SIBLING_WINDOW = timedelta(hours=12)
+# Versions of the same shot (RAW, HDR merge, edits) carry the same camera time, give or take a bracket.
+_SIBLING_WINDOW = timedelta(minutes=10)
 # Faster than this between the photos before and after means a wrong clock or a flight: no interpolation.
 MAX_SPEED_M_S = 70.0
 _SCREENSHOT = re.compile(r"screenshot|screen ?shot|bildschirmfoto|bildschirmaufnahme|capture d.[ée]cran|"
                          r"schermafbeelding|captura de pantalla|scrnli|^svid_", re.I)
 _GRAPHIC_EXT = (".png", ".gif", ".webp", ".bmp", ".svg")
-_SUFFIX = re.compile(r"(?:[-_ ](?:hdr|pano|edit|edited|bearbeitet|enhanced(?:-nr|-sr)?|denoise|dxo|nr|lr|"
-                     r"export|copy|kopie|\d{1,2}))+$", re.I)
+_WORD_SUFFIX = re.compile(r"(?:[-_ ](?:hdr|pano|edit|edited|bearbeitet|enhanced(?:-nr|-sr)?|denoise|dxo|nr|lr|"
+                          r"export|copy|kopie))+$", re.I)
+_NUMBER_SUFFIX = re.compile(r"[-_ ]\d{1,2}$")
+_COPY_SUFFIX = re.compile(r"\s*\(\d+\)$")  # "IMG_1234 (1).jpg", as browsers name a second download
 
 SOURCES = {
     "sibling": ("Same-name file", "Location/Same-name file"),
@@ -93,9 +96,18 @@ def looks_like_screenshot(asset: Asset) -> bool:
 
 
 def sibling_key(file_name: str) -> str:
-    """IMG_1234.CR2, IMG_1234-HDR.dng and IMG_1234_edited.jpg all give "img_1234"."""
-    stem = file_name.rsplit(".", 1)[0].strip()
-    return _SUFFIX.sub("", stem).lower()
+    """IMG_1234.CR2, IMG_1234-HDR.dng, IMG_1234_edited.jpg, IMG_1234-2.jpg and IMG_1234 (1).jpg all give
+    "img_1234". A short number is only taken off if a longer one remains, so that "Holiday 1.jpg" and
+    "Holiday 2.jpg" stay different photos."""
+    stem = _COPY_SUFFIX.sub("", file_name.rsplit(".", 1)[0].strip())
+    while True:
+        shorter = _WORD_SUFFIX.sub("", stem)
+        m = _NUMBER_SUFFIX.search(shorter)
+        if m and re.search(r"\d{3,}", shorter[:m.start()]):
+            shorter = shorter[:m.start()]
+        if shorter == stem:
+            return stem.lower()
+        stem = shorter
 
 
 def photo_instant(asset: Asset, camera_tz: ZoneInfo, use_photo_tz: bool) -> datetime | None:
@@ -142,6 +154,9 @@ class GeoTagger:
         parsed: ParsedGpx = parse_gpx(data, file_name)
         track_id = uuid.uuid4().hex[:12]
         points = [[p.lat, p.lon, p.ele, p.time.timestamp() if p.time else None] for p in parsed.points]
+        # A recorded track only happened once; a planned route may be walked on several days.
+        if parsed.has_times and (same := self.store.find_track(points)) is not None:
+            raise GpxError(f"This track is already uploaded as “{same['name']}”.")
         self.store.save_track(track_id, parsed.name, file_name, points)
         return self.track_summary(track_id)
 
@@ -163,7 +178,7 @@ class GeoTagger:
         return [self._summary(row) for row in self.store.tracks()]
 
     def track_summary(self, track_id: str) -> dict[str, Any]:
-        row = next((r for r in self.store.tracks() if r["id"] == track_id), None)
+        row = self.store.track(track_id)
         if row is None:
             raise KeyError(track_id)
         return self._summary(row)
@@ -200,9 +215,7 @@ class GeoTagger:
 
     def _load_tracks(self, ids: list[str] | None) -> list[tuple[str, str, Track]]:
         out = []
-        for row in self.store.tracks():
-            if ids is not None and row["id"] not in ids:
-                continue
+        for row in self.store.tracks(ids=ids):
             timed = self._timed_points(row)
             if timed:
                 assumed = any(r[3] is None for r in row["points"])
@@ -245,6 +258,8 @@ class GeoTagger:
             progress(i + 1, len(fetch))
         if len(assets) > MAX_ASSETS:
             raise ValueError(f"More than {MAX_ASSETS} photos in this album.")
+        # Live Photo videos are hidden in Immich and follow their photo; locked photos stay private.
+        assets = {aid: a for aid, a in assets.items() if a.shown}
 
         def in_scope(t: datetime) -> bool:
             return whole_album or any(a <= t <= b for a, b in scopes)
@@ -288,7 +303,7 @@ class GeoTagger:
                 item.update(match, status="ok", confidence=_confidence(match))
                 sources[match["source"]] += 1
             else:
-                item.update(status="no_match", reason=self._reason(t, tracks))
+                item.update(status="no_match", reason=self._reason(t, tracks, opts.use_nearby))
             results[a.id] = item
             progress(len(fetch) + i + 1, steps)
 
@@ -298,7 +313,8 @@ class GeoTagger:
                 t = datetime.fromtimestamp(ts, timezone.utc)
                 if a.id in skip or not in_scope(t):
                     continue
-                item = self._base(a, t, opts, cam_tz)
+                # No clock correction for these: their time was not used to find their location.
+                item = self._base(a, t, opts, cam_tz, correct_time=False)
                 item.update(status="located", current_lat=a.latitude, current_lon=a.longitude)
                 results[a.id] = item
                 located_listed += 1
@@ -318,7 +334,8 @@ class GeoTagger:
         self.store.set_value(RUN_KEY, run)
         return {k: v for k, v in run.items() if k != "located"}
 
-    def _base(self, a: Asset, t: datetime, opts: GeoOptions, cam_tz: ZoneInfo) -> dict[str, Any]:
+    def _base(self, a: Asset, t: datetime, opts: GeoOptions, cam_tz: ZoneInfo, *,
+              correct_time: bool = True) -> dict[str, Any]:
         item: dict[str, Any] = {
             "file_name": a.file_name, "type": a.type, "camera": a.camera,
             "local": a.local_datetime.isoformat() if a.local_datetime else None,
@@ -326,7 +343,7 @@ class GeoTagger:
         }
         if looks_like_screenshot(a):
             item["screenshot"] = True
-        if opts.offset_s:
+        if opts.offset_s and correct_time:
             # The corrected capture time, in the photo's own zone if it has one, else the camera zone.
             own = a.time_zone if opts.use_photo_tz and zone_of(a.time_zone) else None
             zone = zone_of(own) or cam_tz
@@ -336,10 +353,15 @@ class GeoTagger:
 
     @staticmethod
     def _sibling(a: Asset, by_key: dict[str, list[Asset]]) -> dict[str, Any] | None:
+        """Another version of the same shot that has a location: same name, same camera clock time.
+
+        The camera clock time (not the instant) is compared: a RAW file without a time zone and its JPEG
+        export with one show the same clock time, while Immich may store instants hours apart.
+        """
         def apart(other: Asset) -> timedelta:
-            if a.taken_at is None or other.taken_at is None:
-                return timedelta(0)
-            return abs(a.taken_at - other.taken_at)
+            if a.local_datetime is None or other.local_datetime is None:
+                return timedelta.max
+            return abs(a.local_datetime - other.local_datetime)
 
         close = [o for o in by_key.get(sibling_key(a.file_name), []) if apart(o) <= _SIBLING_WINDOW]
         if not close:
@@ -417,9 +439,9 @@ class GeoTagger:
                 "method": "nearest"}
 
     @staticmethod
-    def _reason(t: datetime, tracks: list[tuple[str, str, Track]]) -> str:
+    def _reason(t: datetime, tracks: list[tuple[str, str, Track]], use_nearby: bool) -> str:
         if not tracks:
-            return "No photo with a location close enough in time."
+            return "No photo with a location close enough in time." if use_nearby else "No GPX track used."
         if any(track.start <= t <= track.end for _, _, track in tracks):
             return "Taken during a long pause in the recording."
         return "Outside the tracks' time span."
@@ -480,7 +502,9 @@ class GeoTagger:
     def apply(self, asset_ids: list[str], *, fix_time: bool = False, progress: Progress = _noop) -> dict[str, Any]:
         """Write the accepted locations (and, if asked, the clock-corrected times) to Immich."""
         stored = self.store.suggestions(TABLE, asset_ids)
-        todo = [aid for aid in asset_ids if (stored.get(aid) or {}).get("status") == "ok"]
+        # (0, 0) is never suggested, and Immich would take it for "no location".
+        todo = [aid for aid in asset_ids if (stored.get(aid) or {}).get("status") == "ok"
+                and (stored[aid]["lat"], stored[aid]["lon"]) != (0, 0)]
         old = self.history.snapshots(todo)
         done: dict[str, list[str]] = {}
         times: list[tuple[str, str, dict[str, Any], dict[str, Any]]] = []
@@ -488,8 +512,6 @@ class GeoTagger:
         try:
             for i, aid in enumerate(todo):
                 s = stored[aid]
-                if s["lat"] == 0 and s["lon"] == 0:  # Immich would read it as "no location"
-                    continue
                 self.immich.set_location([aid], s["lat"], s["lon"])
                 name, before = old.get(aid, ("", {}))
                 name = name or s.get("file_name", "")
@@ -503,16 +525,18 @@ class GeoTagger:
                     times.append((aid, name, before, {"date": s["corrected"], "time_zone": tz}))
                 progress(i + 1, len(todo))
         finally:
+            # Also after an error part-way: log, tag and clear what was written, so nothing is written twice.
             for source, changes in location_changes.items():
                 label, tag = SOURCES.get(source, (source, f"Location/{source}"))
                 self.history.log("location", source, f"Location: {label}", self._tag_value(tag), changes)
             if times:
                 offset = (self.run() or {}).get("options", {}).get("offset_s", 0)
                 self.history.log("date", "clock", f"Clock corrected by {_format_offset(offset)}", None, times)
-        for source, ids in done.items():
-            tag_assets(self.immich, self._tag_value(SOURCES.get(source, ("", f"Location/{source}"))[1]), ids)
-        self.store.delete_suggestions(TABLE, todo)
-        return {"written": len(todo), "skipped": len(asset_ids) - len(todo), "times_fixed": len(times)}
+            for source, ids in done.items():
+                tag_assets(self.immich, self._tag_value(SOURCES.get(source, ("", f"Location/{source}"))[1]), ids)
+            self.store.delete_suggestions(TABLE, [aid for ids in done.values() for aid in ids])
+        written = sum(len(ids) for ids in done.values())
+        return {"written": written, "skipped": len(asset_ids) - written, "times_fixed": len(times)}
 
     def _tag_value(self, name: str) -> str | None:
         return f"{self.settings.tag_root}/{name}" if self.settings.tag_root else None

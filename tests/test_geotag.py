@@ -21,8 +21,26 @@ def berlin(**kw) -> GeoOptions:
 
 
 def test_sibling_key():
-    assert sibling_key("IMG_1234.CR2") == sibling_key("IMG_1234-HDR.dng") == sibling_key("img_1234_edited.jpg")
+    same = ["IMG_1234.CR2", "IMG_1234-HDR.dng", "img_1234_edited.jpg", "IMG_1234-HDR-2.dng", "IMG_1234 (1).jpg"]
+    assert {sibling_key(n) for n in same} == {"img_1234"}
     assert sibling_key("IMG_1234.CR2") != sibling_key("IMG_1235.CR2")
+    # A series of differently named photos are not versions of one photo.
+    assert sibling_key("Urlaub 1.jpg") != sibling_key("Urlaub 2.jpg")
+    assert sibling_key("DSC_12.JPG") != sibling_key("DSC_47.JPG")
+
+
+def test_sibling_compares_camera_clock_time(fake, geo):
+    # The JPEG export stores a time zone, the RAW does not: Immich keeps instants 2 h apart, but both
+    # show the same camera time, so they are the same shot.
+    fake.add_photo("IMG_1234.JPG", "2024-07-01T15:00:00", tz="Europe/Berlin", lat=46.5, lon=10.5)
+    raw = fake.add_photo("IMG_1234.CR2", "2024-07-01T15:00:00")
+    # Same name, but taken hours later (the camera counter wrapped around): not the same shot.
+    later = fake.add_photo("IMG_1234-1.CR2", "2024-07-01T19:00:00")
+    geo.find(berlin(use_tracks=False, use_nearby=False,
+                    start=datetime(2024, 7, 1, tzinfo=UTC), end=datetime(2024, 7, 2, tzinfo=UTC)))
+    s = geo.suggestions()
+    assert s[raw]["source"] == "sibling" and s[raw]["detail"] == "IMG_1234.JPG"
+    assert s[later]["status"] == "no_match"
 
 
 def test_photo_instant_uses_camera_zone_unless_the_photo_has_one(fake, guesser):
@@ -58,6 +76,16 @@ def test_suggestions_from_track_sibling_and_nothing_written(fake, geo, tour):
     assert s[hdr]["source"] == "sibling" and (s[hdr]["lat"], s[hdr]["lon"]) == (46.5, 10.5)
     assert raw not in s and later not in s  # has a location / outside the track's time span
     assert fake.location_updates == [] and fake.date_updates == []
+
+
+def test_hidden_live_photo_videos_are_left_out(fake, geo, tour):
+    photo = fake.add_photo("IMG_0001.HEIC", "2024-07-01T10:35:00")
+    video = fake.add_photo("IMG_0001.MOV", "2024-07-01T10:35:00")
+    fake.assets[video].type, fake.assets[video].visibility = "VIDEO", "hidden"
+    archived = fake.add_photo("IMG_0002.HEIC", "2024-07-01T10:40:00")
+    fake.assets[archived].visibility = "archive"
+    geo.find(berlin())
+    assert set(geo.suggestions()) == {photo, archived}
 
 
 def test_nearby_photos_in_a_time_range(fake, geo):
@@ -128,6 +156,10 @@ def test_album_filter(fake, geo, tour):
     assert set(geo.suggestions()) == {inside}
 
 
+def day(**kw) -> GeoOptions:
+    return berlin(use_tracks=False, start=datetime(2024, 7, 1, tzinfo=UTC), end=datetime(2024, 7, 2, tzinfo=UTC), **kw)
+
+
 UNDO = {"restored": 1, "skipped": 0, "changed": 0, "failed": 0}
 
 
@@ -144,6 +176,35 @@ def test_undo_location_clears_it_again(fake, geo, guesser, tour):
     assert geo.history.undo(batch["id"]) == UNDO
     assert fake.assets[a].latitude is None and fake.location_updates[-1]["latitude"] == 0
     assert "Metadatenmaster/Location/GPX" not in fake.assets[a].tags
+
+
+def test_undo_of_several_locations(fake, geo, guesser, tour):
+    ids = [fake.add_photo(f"IMG_{i}.CR2", f"2024-07-01T10:{30 + i}:00") for i in range(3)]
+    geo.find(berlin())
+    geo.apply(ids)
+    assert geo.history.undo(last_batch(guesser.store)["id"]) == {**UNDO, "restored": 3}
+    assert all(fake.assets[i].latitude is None for i in ids)
+
+
+def test_write_failing_part_way(fake, geo, guesser, tour):
+    ids = [fake.add_photo(f"IMG_{i}.CR2", f"2024-07-01T10:{30 + i}:00") for i in range(3)]
+    geo.find(berlin())
+    fake.fail_location_after = 1
+    with pytest.raises(Exception, match="500"):
+        geo.apply(ids)
+    # The photo that was written is logged, tagged and no longer pending; the others still are.
+    batch = last_batch(guesser.store)
+    assert [c["asset_id"] for c in batch["changes"]] == [ids[0]]
+    assert fake.assets[ids[0]].tags == {"Metadatenmaster/Location/GPX"}
+    assert set(geo.suggestions()) == {ids[1], ids[2]}
+
+
+def test_no_time_correction_for_photos_that_have_a_location(fake, geo):
+    a = fake.add_photo("IMG_1.CR2", "2024-07-01T10:30:00", lat=46.0, lon=9.0)
+    b = fake.add_photo("IMG_2.CR2", "2024-07-01T10:31:00")
+    geo.find(day(include_located=True, offset_s=600))
+    s = geo.suggestions()
+    assert "corrected" not in s[a] and "corrected" in s[b]
 
 
 def test_undo_location_restores_the_old_one(fake, geo, guesser):
@@ -206,10 +267,6 @@ def test_null_island_is_never_written(fake, geo, tour):
     geo.find(berlin())
     with pytest.raises(ValueError, match="0, 0"):
         geo.place([a], 0.0, 0.0)
-
-
-def day(**kw) -> GeoOptions:
-    return berlin(use_tracks=False, start=datetime(2024, 7, 1, tzinfo=UTC), end=datetime(2024, 7, 2, tzinfo=UTC), **kw)
 
 
 def test_nearby_speed_check(fake, geo):

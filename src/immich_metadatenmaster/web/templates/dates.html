@@ -42,7 +42,7 @@
   <p>
     Model: <code>{{ calibration.backend }}</code> &middot;
     {% if calibration.calibrated %}
-      calibrated on {{ calibration.samples }} faces ({{ calibration.created_at }}),
+      calibrated on {{ calibration.samples }} faces ({{ calibration.created_at | local_time }}),
       {{ calibration.people_with_bias }} people with a personal correction.
     {% else %}
       <strong>not calibrated yet</strong> &ndash; a generic error model is used.

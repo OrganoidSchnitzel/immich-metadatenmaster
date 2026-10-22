@@ -57,6 +57,7 @@ class FakeAsset:
     latitude: float | None = None
     longitude: float | None = None
     type: str = "IMAGE"
+    visibility: str = "timeline"
 
     @property
     def file_created_at(self) -> str:
@@ -81,6 +82,8 @@ class FakeImmich:
         self.location_updates: list[dict[str, Any]] = []
         # Immich clears a location of exactly (0, 0) when it processes it; set to simulate it not doing so.
         self.keep_null_island = False
+        # Simulate Immich failing after this many location updates.
+        self.fail_location_after: int | None = None
 
     # --- setup helpers ---------------------------------------------------------------------
 
@@ -145,7 +148,7 @@ class FakeImmich:
         people = {f.person_id for f in a.faces if f.person_id}
         return {
             "id": a.id, "originalFileName": a.file_name, "type": a.type, "localDateTime": a.local_datetime,
-            "fileCreatedAt": a.file_created_at,
+            "fileCreatedAt": a.file_created_at, "visibility": a.visibility,
             "exifInfo": {"dateTimeOriginal": a.exif_date, "make": a.make, "model": a.model,
                          "description": a.description, "timeZone": a.time_zone,
                          "latitude": a.latitude, "longitude": a.longitude},
@@ -203,6 +206,8 @@ class FakeImmich:
                 "count": len(chunk), "nextPage": str(page + 1) if has_next else None}})
         if path == "/assets" and method == "PUT":
             if "latitude" in body:
+                if self.fail_location_after is not None and len(self.location_updates) >= self.fail_location_after:
+                    return httpx.Response(500, json={"message": "Immich is unhappy"})
                 self.location_updates.append(body)
                 lat, lon = body["latitude"], body["longitude"]
                 if lat == 0 and lon == 0 and not self.keep_null_island:
@@ -306,8 +311,8 @@ def guesser(fake: FakeImmich, settings: Settings, estimator: FakeEstimator) -> A
 @pytest.fixture
 def geo(guesser: AgeGuesser) -> GeoTagger:
     g = GeoTagger(guesser.settings, guesser.immich, guesser.store)
-    g.history.clear_poll_s = 0
-    guesser.history.clear_poll_s = 0
+    for h in (g.history, guesser.history):
+        h.clear_poll_s = h.clear_timeout_s = 0
     return g
 
 

@@ -6,6 +6,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import Settings
 from .dates import parse_date_spec, parse_year_bound
@@ -136,6 +137,11 @@ def cmd_geotag(args: argparse.Namespace, settings: Settings) -> None:
     from .geotag import GeoOptions, GeoTagger
     from .gpx import GpxError
 
+    camera_tz = args.camera_tz or settings.timezone
+    try:
+        ZoneInfo(camera_tz)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise SystemExit(f"Unknown time zone '{camera_tz}' (use a name like Europe/Berlin).") from None
     g = _guesser(settings)
     geo = GeoTagger(settings, g.immich, g.store)
     track_ids = []
@@ -149,14 +155,14 @@ def cmd_geotag(args: argparse.Namespace, settings: Settings) -> None:
         track_ids.append(t["id"])
         print(f"Track '{t['name']}': {t['start'] or '?'} – {t['end'] or '?'}, {t['distance_km']} km")
     album = g.immich.find_album(args.album)["id"] if args.album else None
-    opts = GeoOptions(track_ids=track_ids or None, album_id=album, camera_tz=args.camera_tz or settings.timezone,
+    opts = GeoOptions(track_ids=track_ids or None, album_id=album, camera_tz=camera_tz,
                       use_photo_tz=not args.ignore_photo_tz, offset_s=_parse_offset(args.offset),
                       tolerance_min=args.tolerance, max_gap_min=args.max_gap, use_nearby=not args.no_nearby)
     try:
         run = geo.find(opts, progress=_progress("Searching"))
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    for aid, s in geo.suggestions().items():
+    for s in geo.suggestions().values():
         line = (f"{s['lat']:.5f}, {s['lon']:.5f}  {s['source']:<8} {s['confidence']}" if s["status"] == "ok"
                 else f"–  {s.get('reason', '')}")
         print(f"{s['file_name'][:40]:40} {(s['local'] or '')[:19]:19}  {line}")

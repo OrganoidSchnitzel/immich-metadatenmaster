@@ -42,7 +42,7 @@
   <h2>Recent changes</h2>
   <ul class="recent">
     {% for b in batches %}
-    <li><span class="muted">{{ b.created_at.replace("T", " ") }}</span> {{ b.label }} · {{ b.count }} photo{{ "" if b.count == 1 else "s" }}{% if b.undone_at %} <span class="muted">(undone)</span>{% endif %}</li>
+    <li><span class="muted">{{ b.created_at | local_time }}</span> {{ b.label }} · {{ b.count }} photo{{ "" if b.count == 1 else "s" }}{% if b.undone_at %} <span class="muted">(undone)</span>{% endif %}</li>
     {% endfor %}
   </ul>
 </section>

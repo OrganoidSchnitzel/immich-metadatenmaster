@@ -169,6 +169,8 @@ def test_locations_flow(client, fake):
     assert r.status_code == 200 and r.json()["name"] == "Hike"
     track_id = r.json()["id"]
     assert client.post("/api/tracks", params={"file_name": "x.gpx"}, content=b"nope").status_code == 400
+    again = client.post("/api/tracks", params={"file_name": "hike (1).gpx"}, content=HIKE)
+    assert again.status_code == 400 and "already uploaded as “Hike”" in again.json()["detail"]
     assert client.put(f"/api/tracks/{track_id}", json={"name": "Zugspitze"}).json()["name"] == "Zugspitze"
 
     a = fake.add_photo("IMG_0001.CR2", "2024-07-01T10:20:00")
@@ -203,6 +205,8 @@ def test_untimed_track_times_via_web(client):
     plan = gpx([(47.0, 11.0, None), (47.1, 11.0, None)], name="Plan")
     t = client.post("/api/tracks", params={"file_name": "plan.gpx"}, content=plan).json()
     assert t["needs_times"]
+    # The same planned route may be walked again on another day.
+    assert client.post("/api/tracks", params={"file_name": "plan.gpx"}, content=plan).status_code == 200
     r = client.put(f"/api/tracks/{t['id']}", json={"start": "2024-07-01T10:00", "end": "2024-07-01T09:00",
                                                     "timezone": "Europe/Berlin"})
     assert r.status_code == 400
@@ -254,3 +258,9 @@ def test_no_location_and_album_scope_via_web(client, fake):
     assert client.get("/api/geo/suggestions").json()["items"][0]["detail"] == "München"
     client.post("/api/geo/no-location/remove", json={"asset_ids": [shot]})
     assert client.get("/api/geo/no-location").json() == []
+
+
+def test_local_time():
+    from immich_metadatenmaster.web.app import local_time
+    assert local_time("2026-10-21T11:58:00+00:00", "Europe/Berlin") == "2026-10-21 13:58"
+    assert local_time("", "Europe/Berlin") == "" and local_time("nonsense", "Europe/Berlin") == "nonsense"

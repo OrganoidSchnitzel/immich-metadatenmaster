@@ -76,6 +76,8 @@ class Asset:
     time_zone: str | None = None
     latitude: float | None = None
     longitude: float | None = None
+    # "timeline", "archive", "hidden" (e.g. the video half of a Live Photo) or "locked".
+    visibility: str = "timeline"
 
     @classmethod
     def from_api(cls, d: dict[str, Any]) -> "Asset":
@@ -94,7 +96,13 @@ class Asset:
             time_zone=exif.get("timeZone") or None,
             latitude=_float(exif.get("latitude")),
             longitude=_float(exif.get("longitude")),
+            visibility=d.get("visibility") or "timeline",
         )
+
+    @property
+    def shown(self) -> bool:
+        """Visible in Immich's timeline or archive (not a hidden Live Photo video, not locked)."""
+        return self.visibility in {"timeline", "archive"}
 
     @property
     def has_location(self) -> bool:

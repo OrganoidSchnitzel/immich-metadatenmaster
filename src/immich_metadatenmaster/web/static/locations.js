@@ -85,7 +85,8 @@ function toLocalInput(iso) {
 
 // --- map -----------------------------------------------------------------------------------
 
-const map = L.map("map", { zoomControl: true }).setView([48, 10], 5);
+// Canvas instead of SVG: stays fast with thousands of photo markers.
+const map = L.map("map", { zoomControl: true, preferCanvas: true }).setView([48, 10], 5);
 L.tileLayer(app.dataset.tiles, { maxZoom: 19, attribution: app.dataset.attribution }).addTo(map);
 const trackLayer = L.layerGroup().addTo(map);
 const locatedLayer = L.layerGroup().addTo(map);
@@ -100,14 +101,19 @@ const SOURCE_COLOR = {
   map: css.getPropertyValue("--src-map").trim() || "#16a34a",
 };
 
-function trackColor(i) { return TRACK_COLORS[i % TRACK_COLORS.length]; }
+/** A colour per track that stays the same when other tracks are added or deleted. */
+function trackColor(id) {
+  let h = 0;
+  for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return TRACK_COLORS[h % TRACK_COLORS.length];
+}
 
 function drawTracks() {
   trackLayer.clearLayers();
-  tracks.forEach((t, i) => {
+  tracks.forEach(t => {
     if (!t.line.length) return;
     const on = isTicked(t.id);
-    L.polyline(t.line, { color: trackColor(i), weight: on ? 4 : 2, opacity: on ? 0.85 : 0.35 })
+    L.polyline(t.line, { color: trackColor(t.id), weight: on ? 4 : 2, opacity: on ? 0.85 : 0.35 })
       .bindTooltip(esc(t.name)).addTo(trackLayer);
   });
 }
@@ -119,7 +125,7 @@ function drawSuggestions() {
   for (const [lat, lon] of (run && run.located) || []) {
     L.circleMarker([lat, lon], { radius: 3, color: "#888", weight: 1, fillOpacity: 0.5 }).addTo(locatedLayer);
   }
-  for (const it of items) {
+  for (const it of visibleItems()) {
     if (it.status !== "ok") continue;
     const sel = selected.has(it.id);
     const m = L.circleMarker([it.lat, it.lon], {
@@ -278,7 +284,7 @@ function renderTracks() {
     list.innerHTML = `<li class="muted">No tracks yet. Upload a GPX file to start.</li>`;
     return;
   }
-  list.innerHTML = tracks.map((t, i) => {
+  list.innerHTML = tracks.map(t => {
     const span = t.start ? `${fmtInstant(t.start)} – ${fmtInstant(t.end)}` : "";
     const times = t.needs_times ? `
       <div class="needs-times">
@@ -291,7 +297,7 @@ function renderTracks() {
       </div>` : (!t.has_times ? `<div class="muted">Times entered by you (assumed constant pace). <a href="#" data-action="retime">Change</a></div>` : "");
     return `<li data-id="${esc(t.id)}">
       <label class="check"><input type="checkbox" data-action="tick" ${isTicked(t.id) ? "checked" : ""}>
-        <i class="swatch" style="background:${trackColor(i)}"></i>
+        <i class="swatch" style="background:${trackColor(t.id)}"></i>
         <span class="track-name" title="${esc(t.file_name)}">${esc(t.name)}</span></label>
       <div class="muted">${esc(span)}${span ? " · " : ""}${t.distance_km} km · ${t.points} points</div>
       ${times}
@@ -305,6 +311,8 @@ function renderTracks() {
 
 async function loadTracks() {
   tracks = await api("GET", "/api/tracks");
+  // Routes still waiting for their times first, then the newest tracks.
+  tracks.sort((a, b) => (b.start || "9999").localeCompare(a.start || "9999"));
   renderTracks();
   drawTracks();
 }
@@ -475,6 +483,9 @@ function suggestionHtml(it) {
     </div>`;
 }
 
+/** Photos without a location still in the list (not counting listed photos that already have one). */
+function pendingCount() { return items.filter(it => it.status !== "located").length; }
+
 function render() {
   review.hidden = !run;
   if (!run) { grid.innerHTML = ""; return; }
@@ -482,11 +493,11 @@ function render() {
   const opts = run.options || {};
   const src = Object.entries(run.sources || {}).map(([k, v]) => `${v} from ${SOURCE_LABEL[k] || k}`).join(", ");
   document.getElementById("run-summary").innerHTML =
-    `Search of ${esc(fmtInstant(run.created_at))}: ${run.searched} photos looked at, ${run.with_location} already had a location, ` +
+    `Search of ${esc(new Date(run.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }))}: ${run.searched} photos looked at, ${run.with_location} already had a location, ` +
     `${run.candidates} without one ${run.whole_album ? "in the album" : "in the time span"}, <strong>${run.suggested} with a suggestion</strong>${src ? ` (${esc(src)})` : ""}.` +
     (run.no_location_needed ? ` ${run.no_location_needed} skipped as “no location needed”.` : "") +
     (opts.offset_s ? ` Clock offset ${esc(formatOffset(opts.offset_s))}.` : "") +
-    (items.length < run.candidates ? ` ${run.candidates - items.length} already written or discarded.` : "");
+    (pendingCount() < run.candidates ? ` ${run.candidates - pendingCount()} already written, discarded or marked.` : "");
 
   const hint = document.getElementById("hint");
   if (run.hint) {
@@ -510,7 +521,8 @@ function render() {
 
   const shown = visibleItems();
   if (!shown.length) {
-    grid.innerHTML = `<p class="muted">${items.length ? "No photos of this camera." : "No photos without a location in this time span."}</p>`;
+    grid.innerHTML = `<p class="muted">${items.length ? "No photos of this camera."
+      : `No photos without a location ${run.whole_album ? "in this album" : "in this time span"}.`}</p>`;
   } else {
     grid.innerHTML = shown.map(it => `
       <article class="card ${selected.has(it.id) ? "selected" : ""}" data-id="${esc(it.id)}">

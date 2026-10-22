@@ -64,7 +64,8 @@ def parse_gpx(data: bytes, fallback_name: str = "Track") -> ParsedGpx:
     """
     if len(data) > MAX_GPX_BYTES:
         raise GpxError("The file is too large (more than 50 MB).")
-    if b"<!ENTITY" in data[:4096] or b"<!DOCTYPE" in data[:4096]:
+    # No GPX needs a DOCTYPE; refusing it rules out entity tricks (e.g. "billion laughs").
+    if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
         raise GpxError("GPX files with a DOCTYPE are not supported.")
     try:
         root = ET.fromstring(data)

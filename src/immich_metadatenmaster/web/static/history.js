@@ -3,7 +3,12 @@
 const immichUrl = document.getElementById("app").dataset.immich;
 const tbody = document.getElementById("batches");
 
-function when(iso) { return iso ? iso.replace("T", " ").slice(0, 16) : ""; }
+function when(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso.replace("T", " ").slice(0, 16)
+    : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
 
 function value(kind, v) {
   if (!v) return "–";

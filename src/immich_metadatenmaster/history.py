@@ -72,8 +72,9 @@ class History:
     put back so that no photo is left in the Atlantic.
     """
 
+    # How long to wait for Immich to drop (0, 0): this much, plus a little per photo for its job queue.
     clear_poll_s = 0.5
-    clear_attempts = 20
+    clear_timeout_s = 15.0
 
     def __init__(self, store: Store, immich: ImmichClient) -> None:
         self.store = store
@@ -115,12 +116,23 @@ class History:
         changes = batch["changes"]
         counts = {"restored": 0, "skipped": 0, "changed": 0, "failed": 0}
         restored: list[str] = []
+        # Locations to remove: (0, 0) is written to all of them first, then Immich gets time to clear them.
+        to_clear: dict[str, tuple[float, float]] = {}
         for i, c in enumerate(changes):
             outcome = self._restore(batch["kind"], c["asset_id"], c["old"], c["new"])
-            counts[outcome] += 1
-            if outcome == "restored":
-                restored.append(c["asset_id"])
+            if outcome == "clear":
+                self.immich.set_location([c["asset_id"]], 0.0, 0.0)
+                to_clear[c["asset_id"]] = (c["new"]["latitude"], c["new"]["longitude"])
+            else:
+                counts[outcome] += 1
+                if outcome == "restored":
+                    restored.append(c["asset_id"])
             progress(i + 1, len(changes))
+        if to_clear:
+            cleared = self._await_cleared(to_clear)
+            restored += cleared
+            counts["restored"] += len(cleared)
+            counts["failed"] += len(to_clear) - len(cleared)
         if batch["kind"] == "date":
             self.store.delete_dated(restored)
         if batch.get("tag") and restored:
@@ -153,17 +165,32 @@ class History:
         if old.get("latitude") is not None and old.get("longitude") is not None:
             self.immich.set_location([aid], old["latitude"], old["longitude"])
             return "restored"
-        return "restored" if self._clear_location(aid, new["latitude"], new["longitude"]) else "failed"
+        return "clear"
 
-    def _clear_location(self, aid: str, lat: float, lon: float) -> bool:
-        self.immich.set_location([aid], 0.0, 0.0)
-        for _ in range(self.clear_attempts):
-            if not self.immich.asset(aid).has_location:
-                return True
+    def _await_cleared(self, pending: dict[str, tuple[float, float]]) -> list[str]:
+        """Wait until Immich has dropped (0, 0) from the photos. Photos where it stays get the written
+        location back. Returns the cleared ones."""
+        pending = dict(pending)
+        cleared: list[str] = []
+        deadline = time.monotonic() + self.clear_timeout_s + 0.1 * len(pending)
+        while True:
+            for aid in list(pending):
+                try:
+                    if not self.immich.asset(aid).has_location:
+                        cleared.append(aid)
+                        del pending[aid]
+                except ImmichError as exc:
+                    log.warning("Cannot read %s: %s", aid, exc)
+            if not pending or time.monotonic() >= deadline:
+                break
             time.sleep(self.clear_poll_s)
-        log.warning("Immich kept (0, 0) on %s; putting the written location back", aid)
-        self.immich.set_location([aid], lat, lon)
-        return False
+        for aid, (lat, lon) in pending.items():
+            log.warning("Immich kept (0, 0) on %s; putting the written location back", aid)
+            try:
+                self.immich.set_location([aid], lat, lon)
+            except ImmichError as exc:
+                log.error("Could not put the location of %s back: %s", aid, exc)
+        return cleared
 
 
 def _same_degrees(a: float | None, b: float | None) -> bool:

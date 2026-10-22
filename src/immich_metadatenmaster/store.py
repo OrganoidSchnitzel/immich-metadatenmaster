@@ -6,7 +6,7 @@ import json
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +103,8 @@ class DatedRecord:
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    """UTC with its offset, so the browser can show it in local time (containers often run on UTC)."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class Store:
@@ -215,10 +216,23 @@ class Store:
             self._db.execute("INSERT INTO track VALUES (?, ?, ?, ?, NULL, NULL, ?)",
                              (track_id, name, file_name, json.dumps(points), _now()))
 
-    def tracks(self, with_points: bool = True) -> list[dict[str, Any]]:
-        cols = "id, name, file_name, start, end, created_at" + (", points" if with_points else "")
+    def find_track(self, points: list[list[Any]]) -> dict[str, str] | None:
+        """A stored track with exactly these points (the same file uploaded again), if any."""
         with self._lock:
-            rows = self._db.execute(f"SELECT {cols} FROM track ORDER BY created_at, rowid").fetchall()
+            row = self._db.execute("SELECT id, name FROM track WHERE points = ?", (json.dumps(points),)).fetchone()
+        return {"id": row[0], "name": row[1]} if row else None
+
+    def track(self, track_id: str) -> dict[str, Any] | None:
+        return next((t for t in self.tracks(ids=[track_id])), None)
+
+    def tracks(self, with_points: bool = True, ids: list[str] | None = None) -> list[dict[str, Any]]:
+        cols = "id, name, file_name, start, end, created_at" + (", points" if with_points else "")
+        where, args = "", []
+        if ids is not None:
+            where = f" WHERE id IN ({','.join('?' * len(ids))})" if ids else " WHERE 0"
+            args = list(ids)
+        with self._lock:
+            rows = self._db.execute(f"SELECT {cols} FROM track{where} ORDER BY created_at, rowid", args).fetchall()
         out = []
         for r in rows:
             item = {"id": r[0], "name": r[1], "file_name": r[2], "start": r[3], "end": r[4], "created_at": r[5]}

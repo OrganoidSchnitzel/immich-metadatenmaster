@@ -131,6 +131,21 @@ def _local(text: str | None, tz: ZoneInfo) -> datetime | None:
     return dt.replace(tzinfo=tz) if dt.tzinfo is None else dt
 
 
+def local_time(value: str | None, tz_name: str) -> str:
+    """"2026-10-21T11:58:00+00:00" → "2026-10-21 13:58" in the given zone. Old records without an offset
+    were written in this machine's local time."""
+    if not value:
+        return ""
+    try:
+        dt = datetime.fromisoformat(value)
+        zone = ZoneInfo(tz_name)
+    except (ValueError, ZoneInfoNotFoundError):
+        return value.replace("T", " ")[:16]
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return dt.astimezone(zone).strftime("%Y-%m-%d %H:%M")
+
+
 class Runtime:
     """Holds the current settings and AgeGuesser; the setup page can swap both at runtime."""
 
@@ -186,6 +201,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     app = FastAPI(title="Immich Metadatenmaster", lifespan=lifespan)
     geo = runtime.geo
     templates = Jinja2Templates(directory=_HERE / "templates")
+    templates.env.filters["local_time"] = lambda value: local_time(value, runtime.settings.timezone)
     app.mount("/static", StaticFiles(directory=_HERE / "static"), name="static")
     app.state.runtime = runtime
     app.state.jobs = jobs
@@ -485,11 +501,13 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     @app.post("/api/tracks")
     async def upload_track(request: Request, file_name: str = "track.gpx") -> dict[str, Any]:
         tagger = geo()
-        data = await request.body()
-        if len(data) > MAX_GPX_BYTES:
-            raise HTTPException(status_code=413, detail="The file is too large (more than 50 MB).")
+        data = bytearray()
+        async for chunk in request.stream():  # stop reading as soon as the file is too large
+            data += chunk
+            if len(data) > MAX_GPX_BYTES:
+                raise HTTPException(status_code=413, detail="The file is too large (more than 50 MB).")
         try:
-            return await run_in_threadpool(tagger.add_track, file_name[:200], data)
+            return await run_in_threadpool(tagger.add_track, file_name[:200], bytes(data))
         except GpxError as exc:
             raise bad_request(exc) from exc
 
