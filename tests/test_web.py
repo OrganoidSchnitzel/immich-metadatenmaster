@@ -17,7 +17,7 @@ def client(guesser):
 def wait(client, job):
     for _ in range(200):
         job = client.get(f"/api/jobs/{job['id']}").json()
-        if job["status"] in {"done", "failed"}:
+        if job["status"] in {"done", "failed", "cancelled"}:
             return job
         time.sleep(0.02)
     raise AssertionError("job did not finish")
@@ -264,3 +264,52 @@ def test_local_time():
     from immich_metadatenmaster.web.app import local_time
     assert local_time("2026-10-21T11:58:00+00:00", "Europe/Berlin") == "2026-10-21 13:58"
     assert local_time("", "Europe/Berlin") == "" and local_time("nonsense", "Europe/Berlin") == "nonsense"
+
+
+def test_jobs_can_be_listed_and_cancelled(client, guesser, batch):
+    import threading
+    gate = threading.Event()
+    real = guesser.observations
+
+    def slow(aid):
+        gate.wait(5)
+        return real(aid)
+
+    guesser.observations = slow
+    job = client.post("/api/estimate", json={"asset_ids": batch["ids"], "album_id": "scans"}).json()
+    assert job["label"] == "Analysing faces" and job["meta"] == {"album_id": "scans"} and job["cancellable"]
+    assert [j["id"] for j in client.get("/api/jobs").json()] == [job["id"]]
+    assert client.post(f"/api/jobs/{job['id']}/cancel").json()["id"] == job["id"]
+    gate.set()
+    done = wait(client, job)
+    assert done["status"] == "cancelled" and not done["cancellable"]
+    assert client.get("/api/jobs").json() == []
+    assert client.post("/api/jobs/nope/cancel").status_code == 404
+
+
+def test_cancelled_write_keeps_records_consistent(client, guesser, batch, fake):
+    calls = {"n": 0}
+    real = guesser.immich.set_date
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        real(*args, **kwargs)
+        if calls["n"] == 1:  # the user clicks "Cancel" while the first date is being written
+            for j in client.app.state.jobs.active():
+                client.app.state.jobs.cancel(j.id)
+
+    guesser.immich.set_date = counting
+    job = client.post("/api/known-date", json={"asset_ids": batch["ids"], "date": "1986", "album_id": "scans"}).json()
+    assert wait(client, job)["status"] == "cancelled"
+    # Exactly the one photo that was written is recorded, tagged and in the history.
+    assets = {a["id"]: a for a in client.get("/api/albums/scans/assets").json()["assets"]}
+    dated = [aid for aid in batch["ids"] if assets[aid]["dated"]]
+    assert len(dated) == 1 and fake.assets[dated[0]].tags == {"Metadatenmaster/Date/Manual"}
+    assert client.get("/api/history").json()[0]["count"] == 1
+
+
+def test_undo_cannot_be_cancelled(client, batch):
+    wait(client, client.post("/api/known-date", json={"asset_ids": batch["ids"][:1], "date": "1986"}).json())
+    job = client.post(f"/api/history/{client.get('/api/history').json()[0]['id']}/undo").json()
+    assert not job["cancellable"]
+    assert client.post(f"/api/jobs/{job['id']}/cancel").status_code == 400

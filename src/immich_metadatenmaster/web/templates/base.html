@@ -19,8 +19,10 @@
       {% endif %}
       <a href="/settings"{% if nav.startswith('/settings') %} class="active"{% endif %}>Settings</a>
     </nav>
+    <span id="job-pill" class="job-pill" hidden></span>
   </header>
   <main>{% block content %}{% endblock %}</main>
+  <script src="{{ url_for('static', path='common.js') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

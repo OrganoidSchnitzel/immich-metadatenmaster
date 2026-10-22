@@ -47,6 +47,7 @@ class EstimateRequest(BaseModel):
     joint: bool = False
     not_before: str | None = None
     not_after: str | None = None
+    album_id: str | None = None  # only to find the job again from the album page
 
 
 class ApplyRequest(BaseModel):
@@ -370,6 +371,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
             items.append({
                 "id": a.id,
                 "file_name": a.file_name,
+                "type": a.type,
                 "date": a.local_datetime.isoformat() if a.local_datetime else None,
                 "people": [p.name for p in a.people if p.name],
                 "dated": dated[a.id].to_dict() if a.id in dated else None,
@@ -426,7 +428,8 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
             raise bad_request(exc) from exc
         album = body.album_id if body.remove_from_album else None
         job = jobs.submit("known-date", lambda progress: guesser.apply_known_date(
-            body.asset_ids, spec, keep_order=body.keep_order, remove_from_album=album, progress=progress))
+            body.asset_ids, spec, keep_order=body.keep_order, remove_from_album=album, progress=progress),
+            label="Writing dates", meta={"album_id": body.album_id})
         return job.to_dict()
 
     @app.post("/api/estimate")
@@ -438,7 +441,8 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         except ValueError as exc:
             raise bad_request(exc) from exc
         job = jobs.submit("estimate", lambda progress: guesser.estimate(
-            body.asset_ids, joint=body.joint, not_before=not_before, not_after=not_after, progress=progress))
+            body.asset_ids, joint=body.joint, not_before=not_before, not_after=not_after, progress=progress),
+            label="Analysing faces", meta={"album_id": body.album_id})
         return job.to_dict()
 
     @app.post("/api/name-dates")
@@ -450,7 +454,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
             assets = [a for a in guesser.immich.album_assets(body.album_id) if a.id in wanted]
             return guesser.suggest_name_dates(assets, progress=progress)
 
-        return jobs.submit("name-dates", run).to_dict()
+        return jobs.submit("name-dates", run, label="Reading file names", meta={"album_id": body.album_id}).to_dict()
 
     @app.post("/api/apply-estimates")
     def apply_estimates(body: ApplyRequest) -> dict[str, Any]:
@@ -476,7 +480,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
                 merged["remove_error"] = first.get("remove_error") or second.get("remove_error")
             return merged
 
-        return jobs.submit("apply", run).to_dict()
+        return jobs.submit("apply", run, label="Writing dates", meta={"album_id": body.album_id}).to_dict()
 
     @app.post("/api/discard-estimates")
     def discard_estimates(body: AssetIds) -> dict[str, Any]:
@@ -489,7 +493,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     def calibrate(body: CalibrateRequest) -> dict[str, Any]:
         guesser = g()
         job = jobs.submit("calibrate", lambda progress: report_dict(
-            guesser.calibrate(per_person=body.per_person, progress=progress)))
+            guesser.calibrate(per_person=body.per_person, progress=progress)), label="Calibrating the age model")
         return job.to_dict()
 
     # --- locations ----------------------------------------------------------------------------
@@ -550,7 +554,8 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
             raise bad_request(exc) from exc
         if bool(opts.start) != bool(opts.end):
             raise bad_request(ValueError("Enter both ends of the time range, or neither."))
-        return jobs.submit("geo-find", lambda progress: tagger.find(opts, progress=progress)).to_dict()
+        return jobs.submit("geo-find", lambda progress: tagger.find(opts, progress=progress),
+                           label="Searching photos without a location", meta={"page": "locations"}).to_dict()
 
     @app.get("/api/geo/suggestions")
     def geo_suggestions() -> dict[str, Any]:
@@ -599,7 +604,8 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     def geo_apply(body: GeoApplyRequest) -> dict[str, Any]:
         tagger = geo()
         return jobs.submit("geo-apply", lambda progress: tagger.apply(
-            body.asset_ids, fix_time=body.fix_time, progress=progress)).to_dict()
+            body.asset_ids, fix_time=body.fix_time, progress=progress),
+            label="Writing locations", meta={"page": "locations"}).to_dict()
 
     # --- history ----------------------------------------------------------------------------
 
@@ -628,11 +634,28 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
             raise HTTPException(status_code=404, detail="Unknown change")
         if not guesser.history.undoable(batch):
             raise bad_request(ValueError("This change cannot be undone."))
-        return jobs.submit("undo", lambda progress: guesser.history.undo(batch_id, progress=progress)).to_dict()
+        # Not cancellable: removing locations needs its second step, waiting for Immich, to finish.
+        return jobs.submit("undo", lambda progress: guesser.history.undo(batch_id, progress=progress),
+                           label="Undoing a change", meta={"page": "history"}, cancellable=False).to_dict()
+
+    @app.get("/api/jobs")
+    def active_jobs() -> list[dict[str, Any]]:
+        """Jobs waiting or running, so that pages can show them again after a reload."""
+        return [j.to_dict() for j in jobs.active()]
 
     @app.get("/api/jobs/{job_id}")
     def job_status(job_id: str) -> dict[str, Any]:
         job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Unknown job")
+        return job.to_dict()
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    def cancel_job(job_id: str) -> dict[str, Any]:
+        try:
+            job = jobs.cancel(job_id)
+        except ValueError as exc:
+            raise bad_request(exc) from exc
         if job is None:
             raise HTTPException(status_code=404, detail="Unknown job")
         return job.to_dict()

@@ -58,18 +58,10 @@ tbody.addEventListener("click", async (ev) => {
   if (undo) {
     const row = undo.closest("tr");
     if (!confirm(`Undo “${row.querySelector("[data-details]").textContent}”? The photos get their previous values back.`)) return;
-    const resultEl = document.getElementById("result");
-    resultEl.hidden = true;
+    document.getElementById("result").hidden = true;
     try {
       const job = await api("POST", `/api/history/${undo.dataset.undo}/undo`);
-      const r = await followJob(job, document.getElementById("job"), "Undoing");
-      const parts = [`Restored ${r.restored} photo${r.restored === 1 ? "" : "s"}`];
-      if (r.changed) parts.push(`${r.changed} left alone because they were changed in Immich since`);
-      if (r.failed) parts.push(`${r.failed} could not be cleared by Immich and keep the written location`);
-      if (r.skipped) parts.push(`${r.skipped} skipped (previous value unknown)`);
-      resultEl.textContent = parts.join(" · ") + ".";
-      resultEl.classList.toggle("warn", Boolean(r.changed || r.failed));
-      resultEl.hidden = false;
+      showUndoResult(await followJob(job, document.getElementById("job"), "Undoing"));
       await load();
     } catch (e) {
       alert(e.message);
@@ -77,4 +69,18 @@ tbody.addEventListener("click", async (ev) => {
   }
 });
 
+function showUndoResult(r) {
+  const resultEl = document.getElementById("result");
+  if (!r) return;
+  const parts = [`Restored ${r.restored} photo${r.restored === 1 ? "" : "s"}`];
+  if (r.changed) parts.push(`${r.changed} left alone because they were changed in Immich since`);
+  if (r.failed) parts.push(`${r.failed} could not be cleared by Immich and keep the written location`);
+  if (r.skipped) parts.push(`${r.skipped} skipped (previous value unknown)`);
+  resultEl.textContent = parts.join(" · ") + ".";
+  resultEl.classList.toggle("warn", Boolean(r.changed || r.failed));
+  resultEl.hidden = false;
+}
+
 load().catch(e => { tbody.innerHTML = `<tr><td colspan="4" class="err">${esc(e.message)}</td></tr>`; });
+// An undo still running from before a reload.
+resumeJob(j => j.kind === "undo", document.getElementById("job"), async (r) => { showUndoResult(r); await load(); });

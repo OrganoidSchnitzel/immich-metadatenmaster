@@ -16,6 +16,8 @@
       <button data-select="none">None</button>
       <button data-select="undated">Not dated yet</button>
       <button data-select="suggested">With suggestion</button>
+      <span class="muted shortcut-hint">Shift-click: range · <kbd>A</kbd> all · <kbd>Esc</kbd> none ·
+        <kbd>V</kbd> or double-click: large view</span>
     </div>
 
     <div class="actions">
@@ -65,5 +67,4 @@
   </section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', path='common.js') }}"></script>
-<script src="{{ url_for('static', path='album.js') }}"></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='album.js') }}"></script>{% endblock %}

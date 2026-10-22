@@ -17,22 +17,27 @@ const hasAnySuggestion = a => Boolean(a.name_date || a.estimate);
 
 function yearOf(iso) { return iso ? iso.slice(0, 10) : "–"; }
 
-function nameDateHtml(a) {
+function acceptButton(a, buttons) {
+  return buttons ? `<button type="button" class="accept" data-accept="${esc(a.id)}">Write this date</button>` : "";
+}
+
+function nameDateHtml(a, buttons) {
   const n = a.name_date;
   if (!n) return "";
   return `<div class="badge suggest">
       <div>File name says <span class="big">${esc(n.label)}</span></div>
       <div class="muted">${n.has_time ? "Date and time" : "Day only"} · in Immich: ${esc(yearOf(n.current))}</div>
-      <button type="button" class="accept" data-accept="${esc(a.id)}">Write this date</button>
+      ${acceptButton(a, buttons)}
     </div>`;
 }
 
-function statusHtml(a) {
+/** The photo's date status and suggestion; `buttons` adds "Write this date" (not in the large view). */
+function statusHtml(a, buttons = true) {
   const est = a.estimate;
   if (a.name_date) {
     const other = est && est.status === "ok"
       ? `<div class="muted">Faces suggest ≈ ${esc(est.estimate.label)} (the file name wins when writing)</div>` : "";
-    return nameDateHtml(a) + other;
+    return nameDateHtml(a, buttons) + other;
   }
   if (est) {
     if (est.status !== "ok") {
@@ -47,7 +52,7 @@ function statusHtml(a) {
         <div>Suggestion <span class="big">≈ ${esc(e.label)}</span></div>
         <div>90%: ${esc(e.range_label)} · <span class="conf-${e.confidence}">${e.confidence} confidence</span></div>
         ${joint}${faces ? `<ul class="faces">${faces}</ul>` : ""}
-        <button type="button" class="accept" data-accept="${esc(a.id)}">Write this date</button>
+        ${acceptButton(a, buttons)}
       </div>`;
   }
   if (a.dated) {
@@ -71,6 +76,8 @@ function render() {
     return `<article class="card ${selected.has(a.id) ? "selected" : ""}" data-id="${esc(a.id)}">
       <img src="/thumb/${esc(a.id)}" alt="" loading="lazy">
       <span class="check"></span>
+      ${a.type === "VIDEO" ? `<span class="kind" title="Video">▶</span>` : ""}
+      <button type="button" class="zoom" data-zoom title="Large view (V or double-click)">⤢</button>
       <a class="open" href="${esc(immichUrl)}/photos/${esc(a.id)}" target="_blank" rel="noopener" title="Open in Immich">↗</a>
       <div class="body">
         <div class="file" title="${esc(a.file_name)}">${esc(a.file_name)}</div>
@@ -157,6 +164,7 @@ async function runJob(label, url, body) {
     showResult(result);
     return result;
   } catch (e) {
+    if (e.cancelled) { await load(); return null; }  // followJob shows the message
     jobEl.hidden = false;
     jobEl.classList.add("failed");
     jobEl.textContent = e.message;
@@ -165,6 +173,25 @@ async function runJob(label, url, body) {
 }
 
 // --- selection ---------------------------------------------------------------------------
+
+const select = makeSelector(selected, () => assets.map(a => a.id), updateSelection);
+
+function showLarge(id) {
+  const ids = assets.map(a => a.id);
+  openViewer({
+    ids, index: Math.max(0, ids.indexOf(id)), immichUrl,
+    isSelected: x => selected.has(x),
+    toggle: x => select(x),
+    describe: x => {
+      const a = assets.find(y => y.id === x);
+      return a && {
+        title: a.file_name, video: a.type === "VIDEO",
+        html: `<div class="muted">In Immich: ${esc(yearOf(a.date))}${a.people.length ? ` · ${a.people.map(esc).join(", ")}` : ""}</div>
+          ${statusHtml(a, false)}`,
+      };
+    },
+  });
+}
 
 grid.addEventListener("click", async (ev) => {
   const accept = ev.target.closest("[data-accept]");
@@ -175,9 +202,19 @@ grid.addEventListener("click", async (ev) => {
   if (ev.target.closest("a")) return;
   const card = ev.target.closest(".card");
   if (!card) return;
-  const id = card.dataset.id;
-  selected.has(id) ? selected.delete(id) : selected.add(id);
-  updateSelection();
+  if (ev.target.closest("[data-zoom]")) { showLarge(card.dataset.id); return; }
+  select(card.dataset.id, ev);
+});
+
+grid.addEventListener("dblclick", (ev) => {
+  const card = ev.target.closest(".card");
+  if (card && !ev.target.closest("a, button")) showLarge(card.dataset.id);
+});
+
+onShortcuts({
+  a: () => { assets.forEach(a => selected.add(a.id)); updateSelection(); },
+  Escape: () => { selected.clear(); updateSelection(); },
+  v: () => { const first = assets.find(a => selected.has(a.id)) || assets[0]; if (first) showLarge(first.id); },
 });
 
 document.querySelectorAll("[data-select]").forEach(btn => btn.addEventListener("click", () => {
@@ -246,6 +283,7 @@ document.getElementById("estimate-form").addEventListener("submit", async (ev) =
   if (!ids.length) { alert("Select photos first."); return; }
   await runJob("Analysing faces", "/api/estimate", {
     asset_ids: ids,
+    album_id: albumId,
     joint: document.getElementById("joint").checked,
     not_before: document.getElementById("not-before").value || null,
     not_after: document.getElementById("not-after").value || null,
@@ -271,4 +309,7 @@ discardBtn.addEventListener("click", async () => {
   await load();
 });
 
-load();
+load().then(() => resumeJob(j => j.meta.album_id === albumId, jobEl, async (result) => {
+  await load();
+  showResult(result);
+}));

@@ -92,7 +92,8 @@ const trackLayer = L.layerGroup().addTo(map);
 const locatedLayer = L.layerGroup().addTo(map);
 const suggestionLayer = L.layerGroup().addTo(map);
 const markers = new Map();
-const TRACK_COLORS = ["#4250af", "#c2410c", "#0f766e", "#a21caf", "#b45309", "#15803d", "#be123c", "#0369a1"];
+const TRACK_COLORS = ["#4250af", "#c2410c", "#0f766e", "#a21caf", "#b45309", "#15803d", "#be123c", "#0369a1",
+  "#7c3aed", "#4d7c0f", "#db2777", "#0e7490"];
 const css = getComputedStyle(document.documentElement);
 const SOURCE_COLOR = {
   gpx: css.getPropertyValue("--src-gpx").trim() || "#2563eb",
@@ -103,8 +104,8 @@ const SOURCE_COLOR = {
 
 /** A colour per track that stays the same when other tracks are added or deleted. */
 function trackColor(id) {
-  let h = 0;
-  for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  let h = 2166136261;  // FNV-1a
+  for (const c of id) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0;
   return TRACK_COLORS[h % TRACK_COLORS.length];
 }
 
@@ -131,16 +132,55 @@ function drawSuggestions() {
     const m = L.circleMarker([it.lat, it.lon], {
       radius: sel ? 9 : 6, color: sel ? "#000" : "#fff", weight: 2,
       fillColor: SOURCE_COLOR[it.source] || "#2563eb", fillOpacity: 0.9,
-    }).bindTooltip(`${esc(it.file_name)}<br>${esc(fmtLocal(it.local))}`).addTo(suggestionLayer);
-    m.on("click", () => {
-      if (placing) return;
-      toggle(it.id);
+    }).bindTooltip(`${esc(it.file_name)}<br>${esc(fmtLocal(it.local))}<br><span class="muted">Drag to move</span>`)
+      .addTo(suggestionLayer);
+    m.on("click", (ev) => {
+      if (placing || Date.now() - lastDragEnd < 400) return;
+      select(it.id, ev.originalEvent);
       const card = grid.querySelector(`[data-id="${CSS.escape(it.id)}"]`);
       if (card) card.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    m.on("mousedown", (ev) => {
+      if (placing) return;
+      dragging = { id: it.id, marker: m, start: m.getLatLng(), moved: false };
+      map.dragging.disable();
+      L.DomEvent.stop(ev);
     });
     markers.set(it.id, m);
   }
 }
+
+// --- dragging a dot moves that photo ---------------------------------------------------------
+
+let dragging = null;
+let lastDragEnd = 0;
+
+// Document-level events: with the canvas renderer the map does not report moves over the canvas.
+document.addEventListener("mousemove", (ev) => {
+  if (!dragging) return;
+  ev.preventDefault();  // no text selection while dragging
+  dragging.moved = true;
+  dragging.marker.setLatLng(map.mouseEventToLatLng(ev));
+});
+
+async function endDrag() {
+  if (!dragging) return;
+  const d = dragging;
+  dragging = null;
+  map.dragging.enable();
+  if (!d.moved) return;
+  lastDragEnd = Date.now();
+  const p = d.marker.getLatLng();
+  try {
+    await api("POST", "/api/geo/place", { asset_ids: [d.id], lat: p.lat, lon: p.lng, label: "Moved on the map" });
+    await loadSuggestions();
+  } catch (e) {
+    d.marker.setLatLng(d.start);
+    alert(e.message);
+  }
+}
+
+document.addEventListener("mouseup", endDrag);
 
 function fitMap() {
   const bounds = L.latLngBounds([]);
@@ -437,6 +477,7 @@ async function find() {
     fitMap();
     review.scrollIntoView({ behavior: "smooth" });
   } catch (e) {
+    if (e.cancelled) return;  // the previous suggestions stay; followJob shows the message
     errEl.textContent = e.message;
     errEl.hidden = false;
   }
@@ -524,21 +565,70 @@ function render() {
     grid.innerHTML = `<p class="muted">${items.length ? "No photos of this camera."
       : `No photos without a location ${run.whole_album ? "in this album" : "in this time span"}.`}</p>`;
   } else {
-    grid.innerHTML = shown.map(it => `
-      <article class="card ${selected.has(it.id) ? "selected" : ""}" data-id="${esc(it.id)}">
-        <img src="/thumb/${esc(it.id)}" alt="" loading="lazy">
-        <span class="check"></span>
-        <a class="open" href="${esc(immichUrl)}/photos/${esc(it.id)}" target="_blank" rel="noopener" title="Open in Immich">↗</a>
-        <div class="body">
-          <div class="file" title="${esc(it.file_name)}">${esc(it.file_name)}</div>
-          <div class="muted">${esc(fmtLocal(it.local))}${it.camera ? ` · ${esc(it.camera)}` : ""}</div>
-          ${it.corrected ? `<div class="muted">Real time: ${esc(fmtLocal(it.corrected))}</div>` : ""}
-          ${suggestionHtml(it)}
+    // One section per day, in time order.
+    const days = new Map();
+    for (const it of shown) {
+      const day = dayOf(it);
+      if (!days.has(day)) days.set(day, []);
+      days.get(day).push(it);
+    }
+    grid.innerHTML = [...days].map(([day, list]) => `
+      <section class="day">
+        <div class="day-head">
+          <h3>${esc(dayLabel(day))}</h3>
+          <span class="muted">${list.length} photo${list.length === 1 ? "" : "s"} ·
+            ${list.filter(it => it.status === "ok").length} with a suggestion</span>
+          <button type="button" class="link" data-select-day="${esc(day)}">Select day</button>
         </div>
-      </article>`).join("");
+        <div class="grid">${list.map(cardHtml).join("")}</div>
+      </section>`).join("");
   }
   drawSuggestions();
   updateSelection();
+}
+
+function dayOf(it) { return (it.corrected || it.local || it.instant || "").slice(0, 10) || "unknown"; }
+
+function dayLabel(day) {
+  if (day === "unknown") return "Unknown date";
+  const d = new Date(`${day}T12:00:00`);
+  return Number.isNaN(d.getTime()) ? day
+    : d.toLocaleDateString(undefined, { weekday: "short", year: "numeric", month: "short", day: "numeric" });
+}
+
+function cardHtml(it) {
+  return `
+    <article class="card ${selected.has(it.id) ? "selected" : ""}" data-id="${esc(it.id)}">
+      <img src="/thumb/${esc(it.id)}" alt="" loading="lazy">
+      <span class="check"></span>
+      ${it.type === "VIDEO" ? `<span class="kind" title="Video">▶</span>` : ""}
+      <button type="button" class="zoom" data-zoom title="Large view (V or double-click)">⤢</button>
+      <a class="open" href="${esc(immichUrl)}/photos/${esc(it.id)}" target="_blank" rel="noopener" title="Open in Immich">↗</a>
+      <div class="body">
+        <div class="file" title="${esc(it.file_name)}">${esc(it.file_name)}</div>
+        <div class="muted">${esc(fmtLocal(it.local))}${it.camera ? ` · ${esc(it.camera)}` : ""}</div>
+        ${it.corrected ? `<div class="muted">Real time: ${esc(fmtLocal(it.corrected))}</div>` : ""}
+        ${suggestionHtml(it)}
+      </div>
+    </article>`;
+}
+
+function showLarge(id) {
+  const ids = visibleItems().map(it => it.id);
+  openViewer({
+    ids, index: Math.max(0, ids.indexOf(id)), immichUrl,
+    isSelected: x => selected.has(x),
+    toggle: x => select(x),
+    describe: x => {
+      const it = items.find(y => y.id === x);
+      return it && {
+        title: it.file_name, video: it.type === "VIDEO",
+        html: `<div class="muted">${esc(fmtLocal(it.local))}${it.camera ? ` · ${esc(it.camera)}` : ""}</div>
+          ${it.corrected ? `<div class="muted">Real time: ${esc(fmtLocal(it.corrected))}</div>` : ""}
+          ${suggestionHtml(it)}`,
+      };
+    },
+  });
 }
 
 function updateSelection() {
@@ -551,16 +641,17 @@ function updateSelection() {
   discardBtn.disabled = !ids.length;
   noLocationBtn.disabled = !ids.length;
   for (const card of grid.querySelectorAll(".card")) card.classList.toggle("selected", selected.has(card.dataset.id));
+  for (const btn of grid.querySelectorAll("[data-select-day]")) {
+    const ids = visibleItems().filter(it => dayOf(it) === btn.dataset.selectDay).map(it => it.id);
+    btn.textContent = ids.length && ids.every(id => selected.has(id)) ? "Unselect day" : "Select day";
+  }
   for (const [id, m] of markers) {
     const sel = selected.has(id);
     m.setStyle({ radius: sel ? 9 : 6, color: sel ? "#000" : "#fff" });
   }
 }
 
-function toggle(id) {
-  selected.has(id) ? selected.delete(id) : selected.add(id);
-  updateSelection();
-}
+const select = makeSelector(selected, () => visibleItems().map(it => it.id), updateSelection);
 
 async function loadSuggestions() {
   const data = await api("GET", "/api/geo/suggestions");
@@ -572,12 +663,36 @@ async function loadSuggestions() {
 }
 
 grid.addEventListener("click", (ev) => {
+  const dayBtn = ev.target.closest("[data-select-day]");
+  if (dayBtn) {
+    const ids = visibleItems().filter(it => dayOf(it) === dayBtn.dataset.selectDay).map(it => it.id);
+    const all = ids.every(id => selected.has(id));
+    ids.forEach(id => (all ? selected.delete(id) : selected.add(id)));
+    updateSelection();
+    return;
+  }
   if (ev.target.closest("a")) return;
   const card = ev.target.closest(".card");
   if (!card) return;
-  toggle(card.dataset.id);
+  if (ev.target.closest("[data-zoom]")) { showLarge(card.dataset.id); return; }
+  select(card.dataset.id, ev);
   const m = markers.get(card.dataset.id);
   if (m) map.panTo(m.getLatLng());
+});
+
+grid.addEventListener("dblclick", (ev) => {
+  const card = ev.target.closest(".card");
+  if (card && !ev.target.closest("a, button")) showLarge(card.dataset.id);
+});
+
+onShortcuts({
+  a: () => { visibleItems().forEach(it => selected.add(it.id)); updateSelection(); },
+  Escape: () => { if (placing) setPlacing(false); else { selected.clear(); updateSelection(); } },
+  v: () => {
+    const list = visibleItems();
+    const first = list.find(it => selected.has(it.id)) || list[0];
+    if (first) showLarge(first.id);
+  },
 });
 
 document.querySelectorAll("[data-select]").forEach(btn => btn.addEventListener("click", () => {
@@ -657,6 +772,7 @@ applyBtn.addEventListener("click", async () => {
     resultEl.hidden = false;
     await loadSuggestions();
   } catch (e) {
+    if (e.cancelled) { await loadSuggestions(); return; }
     alert(e.message);
   }
 });
@@ -672,4 +788,12 @@ restoreForm();
 form.elements.camera_tz.addEventListener("change", renderTracks);
 Promise.all([loadTracks(), loadSuggestions(), loadNoLocation()]).then(fitMap).catch(e => {
   document.getElementById("tracks").innerHTML = `<li class="notice error">${esc(e.message)}</li>`;
-});
+}).then(() => Promise.all([
+  // A search or write still running from before a reload: show it and refresh when it is done.
+  resumeJob(j => j.kind === "geo-find", document.getElementById("find-job"), async () => {
+    selected.clear();
+    await loadSuggestions();
+    fitMap();
+  }),
+  resumeJob(j => j.kind === "geo-apply", document.getElementById("apply-job"), loadSuggestions),
+]));

@@ -221,7 +221,8 @@ class ImmichClient:
         return list(self.search_assets(albumIds=[album_id], withPeople=False))
 
     def album_assets(self, album_id: str) -> list[Asset]:
-        assets = self.search_assets(albumIds=[album_id], type="IMAGE")
+        """Photos and videos of an album, sorted by file name (hidden Live Photo videos left out)."""
+        assets = (a for a in self.search_assets(albumIds=[album_id]) if a.shown)
         return sorted(assets, key=lambda a: a.file_name.lower())
 
     def person_assets(self, person_id: str) -> Iterator[Asset]:

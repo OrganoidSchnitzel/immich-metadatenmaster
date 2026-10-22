@@ -111,13 +111,15 @@
       <button type="button" id="geo-no-location" disabled title="Screenshots, documents …: never suggest a location for them again">No location needed</button>
     </div>
     <p class="muted search-tip">Tip: select photos, then search a place in the box on the map and click
-      <em>Place here</em>, or click <em>Place selected on the map…</em> and click the spot.</p>
+      <em>Place here</em>, or click <em>Place selected on the map…</em> and click the spot. Drag a dot on the map
+      to move that photo. Shift-click: range · <kbd>A</kbd> all · <kbd>Esc</kbd> none · <kbd>V</kbd> or
+      double-click: large view.</p>
     <div id="apply-job" class="job" hidden></div>
     <div id="apply-result" class="job-result" hidden></div>
   </section>
 
   <section>
-    <div id="geo-grid" class="grid"></div>
+    <div id="geo-grid"></div>
   </section>
 
   <section>
@@ -129,6 +131,5 @@
   </section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', path='common.js') }}"></script>
-<script src="{{ url_for('static', path='vendor/leaflet/leaflet.js') }}"></script>
+{% block scripts %}<script src="{{ url_for('static', path='vendor/leaflet/leaflet.js') }}"></script>
 <script src="{{ url_for('static', path='locations.js') }}"></script>{% endblock %}

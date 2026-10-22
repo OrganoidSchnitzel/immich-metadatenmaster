@@ -166,12 +166,15 @@ class AgeGuesser:
                     written += [(aid, stamp) for aid in asset_ids[i:i + _BULK]]
                     progress(min(i + _BULK, total), total)
         finally:
+            # Also when stopped part-way (cancelled or an error): record exactly what was written.
+            done = [aid for aid, _ in written]
             self._log_dates("manual", f"Known date {spec.label}", "Date/Manual", old, written, tz)
-        for aid in asset_ids:
-            self.store.save_dated(DatedRecord(aid, "manual", spec.label, spec.precision, spec.start, spec.end, day))
-        self.store.delete_estimates(asset_ids)
-        self.store.delete_suggestions("name_date", asset_ids)
-        self._tag("Date/Manual", asset_ids)
+            for aid in done:
+                self.store.save_dated(DatedRecord(aid, "manual", spec.label, spec.precision, spec.start, spec.end,
+                                                  day))
+            self.store.delete_estimates(done)
+            self.store.delete_suggestions("name_date", done)
+            self._tag("Date/Manual", done)
         return {"written": total, "date": day.isoformat(), "label": spec.label,
                 **self._remove_from_album(remove_from_album, asset_ids)}
 
@@ -262,9 +265,10 @@ class AgeGuesser:
                 self.store.save_dated(DatedRecord(aid, "estimate", label, "estimate", est.low, est.high, est.median))
                 progress(i + 1, len(todo))
         finally:
+            done = [aid for aid, _ in written]
             self._log_dates("estimate", "Estimated from faces", "Date/Estimated", old, written, tz, descriptions)
-        self.store.delete_estimates(todo)
-        self._tag("Date/Estimated", todo)
+            self.store.delete_estimates(done)
+            self._tag("Date/Estimated", done)
         return {"written": len(todo), "skipped": len(asset_ids) - len(todo),
                 **self._remove_from_album(remove_from_album, todo)}
 
@@ -321,10 +325,11 @@ class AgeGuesser:
                                                   local.date()))
                 progress(i + 1, len(todo))
         finally:
+            done = [aid for aid, _ in written]
             self._log_dates("filename", "Dates from file names", "Date/File name", old, written, tz)
-        self.store.delete_suggestions("name_date", todo)
-        self.store.delete_estimates(todo)
-        self._tag("Date/File name", todo)
+            self.store.delete_suggestions("name_date", done)
+            self.store.delete_estimates(done)
+            self._tag("Date/File name", done)
         return {"written": len(todo), "skipped": len(asset_ids) - len(todo),
                 **self._remove_from_album(remove_from_album, todo)}
 

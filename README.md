@@ -150,6 +150,18 @@ this can be switched to 1 January in the settings. Estimated photos also get a l
 description, for example:
 `Date estimated by Immich Metadatenmaster: 1987 (90% range 1985–1989; Anna ≈ 7 y, Bernd ≈ 36 y)`.
 
+## Handy to know
+
+- **Large view:** double-click a photo (or press <kbd>V</kbd>, or click ⤢) to see it big. <kbd>←</kbd>
+  <kbd>→</kbd> browse, <kbd>Space</kbd> selects the photo you are looking at, <kbd>Esc</kbd> closes.
+- **Selecting:** shift-click selects everything between the last clicked photo and this one;
+  <kbd>A</kbd> selects all, <kbd>Esc</kbd> clears. On the Locations page, **Select day** selects a whole day.
+- **Moving a photo on the map:** drag its dot.
+- **Long jobs** (estimating, searching, writing) run on the server: you can close or reload the page,
+  the progress shows up again, and the top bar shows what is running. **Cancel** stops a job; what
+  was already written stays written and is in the History.
+- **Videos** are dated too (e.g. `VID-20190713-WA0001.mp4` from WhatsApp).
+
 ## History, tags and undo
 
 - Changed photos are tagged, so you can find them in Immich: `Metadatenmaster/Date/Manual`,
