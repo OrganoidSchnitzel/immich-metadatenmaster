@@ -1,11 +1,24 @@
 {% extends "base.html" %}
 {% block title %}{{ album.albumName }}{% endblock %}
 {% block content %}
-<div id="app" data-album="{{ album.id }}" data-immich="{{ immich_url }}">
+<div id="app" data-album="{{ album.id }}" data-immich="{{ immich_url }}" data-list="{{ list_kind }}">
   <div class="section-head">
     <h1>{{ album.albumName }}</h1>
+    {% if is_list %}
+    <a class="muted" href="/#library">← Library overview</a>
+    {% else %}
     <a class="muted" href="{{ immich_url }}/albums/{{ album.id }}" target="_blank" rel="noopener">Open in Immich ↗</a>
+    {% endif %}
   </div>
+  {% if list_kind == "no-date" %}
+  <p class="muted list-intro">Photos and videos whose files have no capture date (and no date in the name), so Immich
+    files them by another date, often when they were scanned, saved or uploaded. Write the date you know or estimate it
+    from the faces. A photo leaves this list once it has a date.</p>
+  {% elif list_kind == "name-date" %}
+  <p class="muted list-intro">The file names hold a date that Immich does not show. Select the photos
+    (<kbd>A</kbd> for all) and click <em>Read file names</em> to see the suggestions. A photo leaves this list once
+    its date is written.</p>
+  {% endif %}
 
   <section id="people-strip" class="people-strip" hidden></section>
 
@@ -56,8 +69,10 @@
       <button type="button" id="discard" disabled>Discard suggestions</button>
       <span class="muted">Nothing is written to Immich before you click “Write”.</span>
     </div>
+    {% if not is_list %}
     <label class="remove-opt"><input id="remove-from-album" type="checkbox"{% if remove_default %} checked{% endif %}>
       Remove photos from this album once their date is written <span class="muted">(they stay in Immich)</span></label>
+    {% endif %}
     <div id="job" class="job" hidden></div>
     <div id="job-result" class="job-result" hidden></div>
   </section>

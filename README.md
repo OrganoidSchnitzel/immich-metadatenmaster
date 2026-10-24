@@ -18,6 +18,21 @@ values and can be undone.
 Everything runs locally. Photos never leave your server. It combines two earlier tools: Immich Age
 Guesser (dates from faces) and a geotagging notebook (GPX → RAW files).
 
+## Library overview
+
+The start page shows, per year and month, how many photos and videos
+
+- have **no location** (screenshots and photos you marked as needing none are not counted),
+- have **no capture date** in the file and none in the name, so Immich files them by the day they
+  were scanned, saved or uploaded,
+- have **another date in the file name** than Immich shows (`IMG-20190713-WA0001.jpg` uploaded in 2024).
+
+**Scan library** reads the metadata of the whole library (no images; nothing is changed). Click a
+number to work on those photos: *no location* opens the Locations page searching that month (with
+the GPX tracks from that time), the two date columns open the photos like an album, where you can
+write a date, estimate it from faces or read the file names. Writes made with the tool update the
+numbers right away; changes made in Immich show after the next scan.
+
 ## Locations from GPX tracks
 
 1. Open **Locations** and drop your GPX files onto the page. From Komoot: open a *completed* tour
@@ -179,6 +194,10 @@ description, for example:
   the progress shows up again, and the top bar shows what is running. **Cancel** stops a job; what
   was already written stays written and is in the History.
 - **Videos** are dated too (e.g. `VID-20190713-WA0001.mp4` from WhatsApp).
+- **Google Pixel** phones name their files by UTC time (`PXL_20240701_082005123.jpg` for 10:20 in
+  Berlin). Such names count as matching the date in Immich.
+- **Password:** set one under *Settings → Password* (or with `UI_PASSWORD`) if others can reach the
+  tool. Browsers stay logged in for 30 days; a new password logs out all other browsers.
 
 ## History, tags and undo
 
@@ -230,14 +249,16 @@ The first visit opens the setup page:
 
 1. In Immich, open *Account Settings → API Keys* and create a key. Either give it all permissions
    or these: `album.read`, `albumAsset.delete`, `asset.read`, `asset.view`, `asset.download`,
-   `asset.update`, `face.read`, `person.read`, `person.update`, `tag.create`, `tag.asset`.
+   `asset.update`, `face.read`, `person.read`, `person.update`, `tag.create`, `tag.asset`, and
+   optionally `asset.statistics` (for the progress bar of the library scan).
 2. Paste the URL and the key, click **Test connection**, then **Save**.
 
 You can change everything later under **Settings**. The settings, the tool's records and the
 downloaded model (about 100 MB, fetched on the first estimate) live in the `/data` volume.
 
-> The web UI has no login of its own and holds an API key that can change your photos. Only
-> expose it on your LAN, or put it behind your reverse proxy's authentication.
+> The web UI holds an API key that can change your photos, and has no password until you set one
+> under *Settings → Password* (or with `UI_PASSWORD`). Set one if others can reach the tool, and
+> make it reachable from the internet only through HTTPS (e.g. your reverse proxy).
 
 **Updating:** `docker compose pull && docker compose up -d`.
 
@@ -324,6 +345,7 @@ is shown read-only on the Settings page.
 | `MAP_TILE_URL`, `MAP_ATTRIBUTION` | OpenStreetMap | background map of the Locations page |
 | `GEOCODER_URL` | `https://photon.komoot.io` | address search on the map; empty to switch it off |
 | `PLACE_NAMES` | `true` | show place names next to location suggestions (uses the geocoder) |
+| `UI_PASSWORD` | – | password for the web UI (instead of setting one on the Settings page) |
 | `WRITE_DESCRIPTION` | `true` | add the explanation line to estimated photos |
 | `DATA_DIR` | `/data` in Docker | where settings, GPX tracks, records and the model are stored |
 

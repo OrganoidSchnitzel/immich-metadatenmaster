@@ -47,10 +47,19 @@ def date_from_name(file_name: str, today: date | None = None) -> NameDate | None
     return None
 
 
-def differs(name_date: NameDate, current: datetime | None, *, minutes: int = 2) -> bool:
-    """Whether Immich's (local) date disagrees with the file name enough to suggest a change."""
+def differs(name_date: NameDate, current: datetime | None, *, utc: datetime | None = None,
+            minutes: int = 2) -> bool:
+    """Whether Immich's (local) date disagrees with the file name enough to suggest a change.
+
+    Some phones (Google Pixel) name their files by UTC time, so a name matching the photo's UTC time
+    (`utc`, naive) agrees as well.
+    """
     if current is None:
         return True
-    if name_date.time is None:
-        return current.date() != name_date.day
-    return abs((current - name_date.to_datetime()).total_seconds()) > minutes * 60
+
+    def off(when: datetime) -> bool:
+        if name_date.time is None:
+            return when.date() != name_date.day
+        return abs((when - name_date.to_datetime()).total_seconds()) > minutes * 60
+
+    return off(current) and (utc is None or off(utc))

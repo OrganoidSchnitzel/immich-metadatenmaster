@@ -7,6 +7,10 @@ async function api(method, url, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = resp.headers.get("content-type")?.includes("json") ? await resp.json() : await resp.text();
+  if (resp.status === 401 && data && data.login && location.pathname !== "/login") {
+    // The session ran out (or the password was changed elsewhere).
+    location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+  }
   if (!resp.ok) {
     const detail = data && data.detail;
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail || data));
@@ -97,7 +101,8 @@ async function refreshJobPill() {
   try { list = await api("GET", "/api/jobs"); } catch (e) { return; }
   if (!list.length) { pill.hidden = true; return; }
   const j = list.find(x => x.status === "running") || list[0];
-  const href = j.meta.album_id ? `/album/${encodeURIComponent(j.meta.album_id)}` : j.meta.page ? `/${j.meta.page}` : "";
+  const href = j.meta.href || (j.meta.album_id ? `/album/${encodeURIComponent(j.meta.album_id)}`
+    : j.meta.page ? `/${j.meta.page}` : "");
   const text = `⏳ ${esc(j.label)} ${j.status === "queued" ? "(waiting)" : `${j.done}/${j.total || "?"}`}`;
   pill.innerHTML = (href ? `<a href="${esc(href)}">${text}</a>` : text) +
     (list.length > 1 ? ` <span class="muted">+${list.length - 1} waiting</span>` : "");
@@ -226,5 +231,11 @@ function renderViewer() {
     new Image().src = `/thumb/${encodeURIComponent(n)}?size=preview`;
   }
 }
+
+document.getElementById("logout")?.addEventListener("click", async (ev) => {
+  ev.preventDefault();
+  try { await api("POST", "/api/logout"); } catch (e) { /* logged out either way */ }
+  location.href = "/login";
+});
 
 refreshJobPill();

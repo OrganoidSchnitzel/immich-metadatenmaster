@@ -292,7 +292,7 @@ class AgeGuesser:
             nd = date_from_name(a.file_name)
             if nd is not None:
                 with_date += 1
-                if differs(nd, a.local_datetime):
+                if differs(nd, a.local_datetime, utc=a.taken_at.replace(tzinfo=None) if a.taken_at else None):
                     found[a.id] = {"label": nd.label, "local": nd.to_datetime().isoformat(),
                                    "has_time": nd.time is not None,
                                    "current": a.local_datetime.isoformat() if a.local_datetime else None}

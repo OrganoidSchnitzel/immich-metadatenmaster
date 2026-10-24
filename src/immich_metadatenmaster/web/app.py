@@ -3,6 +3,7 @@ Suggestions are only written to Immich when the user accepts them."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import threading
@@ -10,6 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -19,13 +21,16 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from ..config import ENV_NAMES, Settings, env_overrides
+from ..auth import COOKIE, MIN_LENGTH, SESSION_S, Auth, LoginThrottle, hash_password, password_state, \
+    verify_password
+from ..config import ENV_NAMES, ENV_ONLY, Settings, env_overrides
 from ..dates import parse_date_spec, parse_year_bound
 from ..geocode import GeocodeError, reverse as reverse_geocode, search as geocode_search
 from ..geotag import GeoOptions, GeoTagger
 from ..gpx import MAX_GPX_BYTES, GpxError
-from ..immich import ImmichClient, ImmichError
+from ..immich import Asset, ImmichClient, ImmichError
 from ..jobs import JobManager
+from ..overview import LibraryScan, is_list, list_title
 from ..service import AgeGuesser, build_guesser, report_dict
 from ..versions import VersionDates
 
@@ -34,6 +39,10 @@ _HERE = Path(__file__).parent
 # Sent by our own pages on every state-changing request. A custom header cannot be sent cross-site
 # without a CORS preflight (which this app never allows), so other websites cannot trigger actions.
 CSRF_HEADER = "x-metadatenmaster"
+# Reachable without logging in (when a password is set).
+PUBLIC_PATHS = {"/login", "/api/login", "/healthz"}
+# A wrong password costs this long, on top of the throttle.
+FAILED_LOGIN_DELAY_S = 1.0
 
 
 class KnownDateRequest(BaseModel):
@@ -127,6 +136,15 @@ _PLACE_KEY = re.compile(r"^-?\d{1,2}\.\d{3},-?\d{1,3}\.\d{3}$")
 PLACE_BATCH = 15
 
 
+class LoginRequest(BaseModel):
+    password: str = Field(max_length=1000)
+
+
+class PasswordChange(BaseModel):
+    current: str = Field(default="", max_length=1000)
+    new: str = Field(default="", max_length=1000)  # empty: remove the password
+
+
 class GeoApplyRequest(BaseModel):
     asset_ids: list[str] = Field(min_length=1)
     fix_time: bool = False
@@ -147,6 +165,13 @@ def _local(text: str | None, tz: ZoneInfo) -> datetime | None:
     except ValueError:
         raise ValueError(f"Invalid date/time '{text}'.") from None
     return dt.replace(tzinfo=tz) if dt.tzinfo is None else dt
+
+
+def safe_next(target: str | None) -> str:
+    """Where to go after logging in: only paths on this site."""
+    if not target or not target.startswith("/") or target.startswith(("//", "/\\", "/login")):
+        return "/"
+    return target
 
 
 def local_time(value: str | None, tz_name: str) -> str:
@@ -175,6 +200,7 @@ class Runtime:
         self.guesser = guesser if guesser is not None else (build(settings) if settings.configured else None)
         self._geo: GeoTagger | None = None
         self._versions: VersionDates | None = None
+        self._library: LibraryScan | None = None
 
     def require(self) -> AgeGuesser:
         g = self.guesser
@@ -195,6 +221,21 @@ class Runtime:
         if v is None or v.immich is not g.immich:
             v = self._versions = VersionDates(g.settings, g.immich, g.store)
         return v
+
+    def library(self) -> LibraryScan:
+        g = self.require()
+        lib = self._library
+        if lib is None or lib.immich is not g.immich:
+            lib = self._library = LibraryScan(g.immich, g.store)
+        return lib
+
+    def set_values(self, values: dict[str, Any]) -> Settings:
+        """Change and save settings that need no new connection to Immich (e.g. the password)."""
+        with self._lock:
+            updated = self.settings.with_values(values)
+            updated.save(exclude=env_overrides())
+            self.settings = updated
+        return updated
 
     def reconfigure(self, settings: Settings) -> None:
         with self._lock:
@@ -227,6 +268,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     app = FastAPI(title="Immich Metadatenmaster", lifespan=lifespan)
     geo = runtime.geo
     versions = runtime.versions
+    library = runtime.library
     templates = Jinja2Templates(directory=_HERE / "templates")
     templates.env.filters["local_time"] = lambda value: local_time(value, runtime.settings.timezone)
     app.mount("/static", StaticFiles(directory=_HERE / "static"), name="static")
@@ -239,12 +281,33 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
             return JSONResponse({"detail": "Missing request header."}, status_code=403)
         return await call_next(request)
 
+    auth = Auth(settings.data_dir)
+    throttle = LoginThrottle()
+
+    @app.middleware("http")
+    async def login_guard(request: Request, call_next):
+        """With a password set, everything but the login page needs the session cookie."""
+        path = request.url.path
+        if Auth.enabled(runtime.settings) and path not in PUBLIC_PATHS and not path.startswith("/static/") \
+                and not auth.valid(runtime.settings, request.cookies.get(COOKIE)):
+            if path.startswith(("/api/", "/thumb/")):
+                return JSONResponse({"detail": "Log in first.", "login": True}, status_code=401)
+            target = path + (f"?{request.url.query}" if request.url.query else "")
+            return RedirectResponse(f"/login?next={quote(target, safe='')}", status_code=303)
+        return await call_next(request)
+
+    def start_session(response: Response, request: Request, s: Settings) -> None:
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+        response.set_cookie(COOKIE, auth.issue(s), max_age=SESSION_S, httponly=True, samesite="lax",
+                            secure=proto == "https", path="/")
+
     def bad_request(exc: Exception) -> HTTPException:
         return HTTPException(status_code=400, detail=str(exc))
 
     def page(request: Request, name: str, **context: Any) -> Response:
         return templates.TemplateResponse(request, name, {"configured": runtime.guesser is not None,
-                                                          "nav": request.url.path, **context})
+                                                          "nav": request.url.path,
+                                                          "password_on": Auth.enabled(runtime.settings), **context})
 
     def setup_redirect() -> None:
         if runtime.guesser is None:
@@ -300,11 +363,14 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     def album_page(request: Request, album_id: str) -> Response:
         guesser = g()
         try:
-            album = guesser.immich.album(album_id)
-        except ImmichError as exc:
+            # A list from the library overview ("scan:no-date:2019-07") works like an album.
+            album = {"id": album_id, "albumName": list_title(album_id)} if is_list(album_id) \
+                else guesser.immich.album(album_id)
+        except (ImmichError, ValueError) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return page(request, "album.html", album=album, immich_url=guesser.settings.public_url,
-                    remove_default=guesser.settings.remove_from_album)
+                    remove_default=guesser.settings.remove_from_album, is_list=is_list(album_id),
+                    list_kind=album_id.split(":")[1] if is_list(album_id) else "")
 
     @app.get("/people", response_class=HTMLResponse, dependencies=[Depends(setup_redirect)])
     def people_page(request: Request) -> Response:
@@ -313,6 +379,33 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request) -> Response:
         return page(request, "settings.html")
+
+    @app.get("/login", response_class=HTMLResponse)
+    def login_page(request: Request, next: str = "/") -> Response:
+        if not Auth.enabled(runtime.settings):
+            return RedirectResponse("/", status_code=303)
+        return page(request, "login.html", next=safe_next(next), bare=True)
+
+    @app.post("/api/login")
+    async def login(request: Request, body: LoginRequest) -> Response:
+        s = runtime.settings
+        if not Auth.enabled(s):
+            return JSONResponse({"ok": True})
+        if throttle.blocked():
+            raise HTTPException(status_code=429, detail="Too many wrong passwords. Try again in a few minutes.")
+        if not await run_in_threadpool(auth.check, s, body.password):  # scrypt takes a moment
+            throttle.failed()
+            await asyncio.sleep(FAILED_LOGIN_DELAY_S)
+            raise HTTPException(status_code=401, detail="Wrong password.")
+        response = JSONResponse({"ok": True})
+        start_session(response, request, s)
+        return response
+
+    @app.post("/api/logout")
+    def logout() -> Response:
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(COOKIE, path="/")
+        return response
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
@@ -333,14 +426,33 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         s = runtime.settings
-        values = {name: getattr(s, name) for name in ENV_NAMES if name != "immich_api_key"}
+        values = {name: getattr(s, name) for name in ENV_NAMES if name != "immich_api_key" and name not in ENV_ONLY}
         return {"values": values, "has_api_key": bool(s.immich_api_key), "locked": sorted(env_overrides()),
-                "configured": runtime.guesser is not None, "data_dir": str(s.data_dir)}
+                "configured": runtime.guesser is not None, "data_dir": str(s.data_dir),
+                "password": password_state(s), "password_min_length": MIN_LENGTH}
+
+    @app.put("/api/settings/password")
+    async def change_password(request: Request, body: PasswordChange) -> Response:
+        s = runtime.settings
+        state = password_state(s)
+        if state == "env":
+            raise bad_request(ValueError("The password is set by the UI_PASSWORD environment variable."))
+        if state == "set" and not await run_in_threadpool(verify_password, s.ui_password_hash, body.current):
+            await asyncio.sleep(FAILED_LOGIN_DELAY_S)
+            raise bad_request(ValueError("The current password is wrong."))
+        if body.new and len(body.new) < MIN_LENGTH:
+            raise bad_request(ValueError(f"Use at least {MIN_LENGTH} characters."))
+        new_hash = await run_in_threadpool(hash_password, body.new) if body.new else ""
+        updated = runtime.set_values({"ui_password_hash": new_hash})
+        response = JSONResponse({"ok": True, "password": password_state(updated)})
+        if body.new:  # this browser stays logged in; all others are logged out
+            start_session(response, request, updated)
+        return response
 
     def merged_settings(body: dict[str, Any]) -> Settings:
         current = runtime.settings
         locked = env_overrides()
-        values = {k: v for k, v in body.items() if k in ENV_NAMES and k not in locked}
+        values = {k: v for k, v in body.items() if k in ENV_NAMES and k not in locked and k not in ENV_ONLY}
         new_url = str(values.get("immich_url", current.immich_url)).strip().rstrip("/")
         if not values.get("immich_api_key"):
             # Never send the saved key to a server it was not entered for.
@@ -375,11 +487,19 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
 
     # --- data -------------------------------------------------------------------------------
 
+    def assets_of(album_id: str) -> list[Asset]:
+        """The photos of an album, or of a list from the library overview."""
+        if is_list(album_id):
+            return library().list_assets(album_id)
+        return g().immich.album_assets(album_id)
+
     @app.get("/api/albums/{album_id}/assets")
     def album_assets(album_id: str) -> dict[str, Any]:
         guesser = g()
         try:
-            assets = guesser.immich.album_assets(album_id)
+            assets = assets_of(album_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ImmichError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         ids = [a.id for a in assets]
@@ -452,7 +572,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
             spec = parse_date_spec(body.date)
         except ValueError as exc:
             raise bad_request(exc) from exc
-        album = body.album_id if body.remove_from_album else None
+        album = body.album_id if body.remove_from_album and not is_list(body.album_id) else None
         job = jobs.submit("known-date", lambda progress: guesser.apply_known_date(
             body.asset_ids, spec, keep_order=body.keep_order, remove_from_album=album, progress=progress),
             label="Writing dates", meta={"album_id": body.album_id})
@@ -477,7 +597,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         wanted = set(body.asset_ids)
 
         def run(progress: Callable[[int, int], None]) -> dict[str, Any]:
-            assets = [a for a in guesser.immich.album_assets(body.album_id) if a.id in wanted]
+            assets = [a for a in assets_of(body.album_id) if a.id in wanted]
             return guesser.suggest_name_dates(assets, progress=progress)
 
         return jobs.submit("name-dates", run, label="Reading file names", meta={"album_id": body.album_id}).to_dict()
@@ -487,7 +607,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         """Write the suggestions of the given photos: the date from the file name where there is one,
         else the estimate from faces."""
         guesser = g()
-        album = body.album_id if body.remove_from_album else None
+        album = body.album_id if body.remove_from_album and not is_list(body.album_id) else None
         by_name = set(guesser.store.suggestions("name_date", body.asset_ids))
 
         def run(progress: Callable[[int, int], None]) -> dict[str, Any]:
@@ -521,6 +641,18 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         job = jobs.submit("calibrate", lambda progress: report_dict(
             guesser.calibrate(per_person=body.per_person, progress=progress)), label="Calibrating the age model")
         return job.to_dict()
+
+    # --- library overview ---------------------------------------------------------------------
+
+    @app.get("/api/library")
+    def library_summary() -> dict[str, Any]:
+        return library().summary() or {"scanned_at": None}
+
+    @app.post("/api/library/scan")
+    def library_scan() -> dict[str, Any]:
+        lib = library()
+        return jobs.submit("library-scan", lambda progress: lib.scan(progress=progress),
+                           label="Scanning the library", meta={"href": "/#library"}).to_dict()
 
     # --- versions of a photo (HDR, panoramas, edits) -------------------------------------------
 

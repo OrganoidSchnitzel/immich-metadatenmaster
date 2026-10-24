@@ -33,7 +33,10 @@ ENV_NAMES = {
     "map_attribution": "MAP_ATTRIBUTION",
     "geocoder_url": "GEOCODER_URL",
     "place_names": "PLACE_NAMES",
+    "ui_password": "UI_PASSWORD",
 }
+# Only ever taken from the environment: never shown, never written to config.json.
+ENV_ONLY = {"ui_password"}
 
 # Text settings for which "" is a real value; for the others "" means "use the default".
 _EMPTY_ALLOWED = {"immich_url", "immich_api_key", "immich_public_url", "tag_root", "map_attribution", "geocoder_url"}
@@ -83,6 +86,11 @@ class Settings:
     # Show place names next to location suggestions (asks the geocoder about their rounded positions).
     place_names: bool = True
 
+    # Password for the web UI: from the UI_PASSWORD environment variable, or set on the settings page
+    # (stored as a scrypt hash). Neither means no password.
+    ui_password: str = ""
+    ui_password_hash: str = ""
+
     @property
     def configured(self) -> bool:
         return bool(self.immich_url and self.immich_api_key)
@@ -106,6 +114,8 @@ class Settings:
         path = data_dir / CONFIG_FILE
         if path.exists():
             values.update(json.loads(path.read_text()))
+            for name in ENV_ONLY:
+                values.pop(name, None)
         for name in env_overrides(e):
             values[name] = e[ENV_NAMES[name]]
         if "timezone" not in values and e.get("TZ"):
@@ -164,7 +174,7 @@ class Settings:
 
         `exclude` names settings that come from environment variables and must not be persisted.
         """
-        data = {k: v for k, v in asdict(self).items() if k != "data_dir" and k not in exclude}
+        data = {k: v for k, v in asdict(self).items() if k != "data_dir" and k not in exclude | ENV_ONLY}
         self.data_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.config_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2))

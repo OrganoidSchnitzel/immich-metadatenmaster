@@ -208,15 +208,26 @@ class ImmichClient:
                 return album
         raise ImmichError(f"No album named or with id '{name_or_id}'")
 
-    def search_assets(self, **filters: Any) -> Iterator[Asset]:
+    def search_pages(self, size: int = 1000, **filters: Any) -> Iterator[list[Asset]]:
+        """A metadata search, page by page (with EXIF, without people unless asked)."""
         page: int | None = 1
         while page is not None:
-            body = {"withExif": True, "withPeople": True, "size": 250, "page": page, **filters}
+            body = {"withExif": True, "withPeople": False, "size": size, "page": page, **filters}
             result = self._json("POST", "/search/metadata", json=body)["assets"]
-            for item in result["items"]:
-                yield Asset.from_api(item)
+            yield [Asset.from_api(item) for item in result["items"]]
             next_page = result.get("nextPage")
             page = int(next_page) if next_page else None
+
+    def search_assets(self, **filters: Any) -> Iterator[Asset]:
+        for page in self.search_pages(size=250, **{"withPeople": True, **filters}):
+            yield from page
+
+    def count_assets(self, **filters: Any) -> int | None:
+        """How many assets a search finds (None if the API key may not ask: asset.statistics)."""
+        try:
+            return int(self._json("POST", "/search/statistics", json=filters)["total"])
+        except (ImmichError, KeyError, TypeError, ValueError):
+            return None
 
     def album_all_assets(self, album_id: str) -> list[Asset]:
         """Photos and videos of an album."""

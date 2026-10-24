@@ -233,3 +233,26 @@ dialog.sync::backdrop { background: rgba(0,0,0,0.5); }
 @media (max-width: 700px) { .sync-pair { grid-template-columns: 1fr; } }
 .place { font-weight: 600; }
 main select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; }
+/* library overview (start page) */
+.lib-summary { display: flex; gap: 8px 20px; flex-wrap: wrap; margin: 4px 0 12px; }
+.lib-table { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.lib-row { display: grid; grid-template-columns: minmax(7rem, 1.4fr) repeat(4, minmax(4.5rem, 1fr)); gap: 8px;
+  padding: 6px 14px; border-top: 1px solid var(--border); align-items: baseline; }
+.lib-row.head { border-top: 0; font-size: 0.8rem; color: var(--muted); }
+.lib-row.month { font-size: 0.9rem; background: var(--bg); }
+.lib-row.month > span:first-child { padding-left: 1.1em; }
+.lib-table details > summary { cursor: pointer; list-style: none; }
+.lib-table details > summary::-webkit-details-marker { display: none; }
+.lib-label::before { content: "▸"; display: inline-block; width: 1.1em; color: var(--muted); }
+details[open] > summary .lib-label::before { content: "▾"; }
+.lib-row .num { text-align: right; font-variant-numeric: tabular-nums; }
+.lib-row .share { background: linear-gradient(to left, var(--suggest) var(--p), transparent var(--p)); border-radius: 4px; padding-right: 4px; }
+.small { font-size: 0.85rem; }
+.list-intro { max-width: 70ch; margin-top: 0; }
+@media (max-width: 600px) {
+  .lib-row { grid-template-columns: minmax(5rem, 1.2fr) repeat(4, minmax(2.5rem, 1fr)); padding: 6px 8px; font-size: 0.85rem; }
+}
+/* login and password */
+button.danger { color: var(--err); }
+button.danger:hover:not(:disabled) { border-color: var(--err); }
+.login { max-width: 420px; margin: 8vh auto 0; }

@@ -9,8 +9,8 @@
     Create an API key in Immich under <em>Account Settings → API Keys</em> with these permissions:
     <code>album.read</code>, <code>albumAsset.delete</code>, <code>asset.read</code>, <code>asset.view</code>,
     <code>asset.download</code>, <code>asset.update</code>, <code>face.read</code>, <code>person.read</code>,
-    <code>person.update</code>, <code>tag.create</code>, <code>tag.asset</code>
-    (or simply give it all permissions).
+    <code>person.update</code>, <code>tag.create</code>, <code>tag.asset</code>, optionally
+    <code>asset.statistics</code> (or simply give it all permissions).
   </div>
   {% endif %}
 
@@ -103,6 +103,24 @@
     </div>
     <p id="locked-note" class="muted" hidden>Greyed-out fields are set by environment variables and can only be changed there.</p>
     <p class="muted">Stored in <code id="data-dir"></code>.</p>
+  </form>
+
+  <form id="password-form" class="settings" autocomplete="off">
+    <fieldset>
+      <legend>Password</legend>
+      <p id="pw-state" class="muted"></p>
+      <div id="pw-fields">
+        <label id="pw-current" hidden>Current password
+          <input type="password" name="current" autocomplete="current-password"></label>
+        <label>New password <input type="password" name="new" autocomplete="new-password"></label>
+        <label>Repeat the new password <input type="password" name="repeat" autocomplete="new-password"></label>
+        <div class="row">
+          <button type="submit" id="pw-save">Set password</button>
+          <button type="button" id="pw-remove" class="danger" hidden>Remove password</button>
+          <span id="pw-status" class="muted" role="status"></span>
+        </div>
+      </div>
+    </fieldset>
   </form>
 </section>
 {% endblock %}

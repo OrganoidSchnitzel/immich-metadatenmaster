@@ -37,6 +37,18 @@
   </a>
 </section>
 
+<section id="library" class="library">
+  <div class="section-head">
+    <h2>Library overview</h2>
+    <div class="row">
+      <span id="lib-scanned" class="muted"></span>
+      <button type="button" id="lib-scan">Scan library</button>
+    </div>
+  </div>
+  <div id="lib-job" class="job" hidden></div>
+  <div id="lib-body"><p class="muted">Loading…</p></div>
+</section>
+
 {% if batches %}
 <section>
   <h2>Recent changes</h2>
@@ -48,3 +60,4 @@
 </section>
 {% endif %}
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='index.js') }}"></script>{% endblock %}

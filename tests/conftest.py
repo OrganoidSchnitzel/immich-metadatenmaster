@@ -85,6 +85,7 @@ class FakeImmich:
         self.keep_null_island = False
         # Simulate Immich failing after this many location updates.
         self.fail_location_after: int | None = None
+        self.search_calls: list[dict[str, Any]] = []
 
     # --- setup helpers ---------------------------------------------------------------------
 
@@ -191,7 +192,7 @@ class FakeImmich:
             album = self.albums.get(m[1])
             return httpx.Response(200, json={**album, "assetCount": len(album["assets"])}) if album \
                 else httpx.Response(404, json={"message": "not found"})
-        if path == "/search/metadata":
+        if path in {"/search/metadata", "/search/statistics"}:
             if "albumIds" in body:
                 ids = [i for alb in body["albumIds"] for i in self.albums[alb]["assets"]]
             elif "personIds" in body:
@@ -205,11 +206,15 @@ class FakeImmich:
                 lo, hi = (datetime.fromisoformat(body[k].replace("Z", "+00:00")) for k in ("takenAfter", "takenBefore"))
                 ids = [i for i in ids
                        if lo <= datetime.fromisoformat(self.assets[i].file_created_at.replace("Z", "+00:00")) <= hi]
+            if path == "/search/statistics":
+                return httpx.Response(200, json={"total": len(ids)})
             size, page = body.get("size", 250), body.get("page", 1)
             chunk = ids[(page - 1) * size: page * size]
             has_next = page * size < len(ids)
+            self.search_calls.append(body)
+            # Like Immich: "total" is the number of items on this page, not of all matches.
             return httpx.Response(200, json={"albums": {}, "assets": {
-                "items": [self.asset_json(self.assets[i]) for i in chunk], "total": len(ids),
+                "items": [self.asset_json(self.assets[i]) for i in chunk], "total": len(chunk),
                 "count": len(chunk), "nextPage": str(page + 1) if has_next else None}})
         if path == "/assets" and method == "PUT":
             if "latitude" in body:
@@ -232,6 +237,8 @@ class FakeImmich:
                 a.time_zone = body.get("timeZone") or a.time_zone
             return httpx.Response(204)
         if m := re.fullmatch(r"/assets/([^/]+)", path):
+            if m[1] not in self.assets:
+                return httpx.Response(400, json={"message": "Not found or no asset.read access"})
             a = self.assets[m[1]]
             if method == "PUT":
                 a.description = body["description"]

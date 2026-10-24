@@ -32,6 +32,10 @@ def test_differs():
     assert differs(nd, datetime(2019, 7, 13, 18, 0)) and differs(nd, None)
     day_only = date_from_name("IMG-20190713-WA0001.jpg")
     assert not differs(day_only, datetime(2019, 7, 13, 23, 0)) and differs(day_only, datetime(2019, 7, 14, 1, 0))
+    # Pixel phones name files by UTC: PXL_20240701_082005.jpg taken at 10:20:05 in Berlin.
+    pixel = date_from_name("PXL_20240701_082005123.jpg")
+    assert differs(pixel, datetime(2024, 7, 1, 10, 20, 5))
+    assert not differs(pixel, datetime(2024, 7, 1, 10, 20, 5), utc=datetime(2024, 7, 1, 8, 20, 5))
 
 
 def test_name_dates_flow(fake, guesser):

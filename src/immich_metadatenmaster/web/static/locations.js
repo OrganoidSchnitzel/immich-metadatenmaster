@@ -308,11 +308,16 @@ document.getElementById("place-cancel").addEventListener("click", () => setPlaci
 
 // --- tracks --------------------------------------------------------------------------------
 
+// Opened from the library overview: the tracks of that time, ticked for this visit only.
+let tickedNow = null;
+
 function isTicked(id) {
+  if (tickedNow) return tickedNow.has(id);
   return !(loadPrefs().unticked || []).includes(id);
 }
 
 function setTicked(id, on) {
+  if (tickedNow) { on ? tickedNow.add(id) : tickedNow.delete(id); return; }
   const unticked = new Set(loadPrefs().unticked || []);
   on ? unticked.delete(id) : unticked.add(id);
   savePrefs({ unticked: [...unticked] });
@@ -978,6 +983,29 @@ applyBtn.addEventListener("click", async () => {
 
 // --- start ---------------------------------------------------------------------------------
 
+/** /locations?from=2019-07-01T00:00&to=2019-08-01T00:00&label=July 2019 (from the library overview):
+ * search that time with the tracks recorded then. */
+async function searchFromOverview() {
+  const q = new URLSearchParams(location.search);
+  const from = q.get("from"), to = q.get("to");
+  if (!from || !to || Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to))) return;
+  history.replaceState(null, "", location.pathname);  // a reload should not search again
+  const day = 86400e3;  // the camera's zone may differ from the browser's
+  const lo = Date.parse(from) - day, hi = Date.parse(to) + day;
+  tickedNow = new Set(tracks.filter(t => t.start && t.end && Date.parse(t.start) <= hi && Date.parse(t.end) >= lo)
+    .map(t => t.id));
+  renderTracks();
+  drawTracks();
+  form.elements.start.value = from;
+  form.elements.end.value = to;
+  const note = document.getElementById("preset-note");
+  const n = tickedNow.size;
+  note.textContent = `${q.get("label") || "This time"} from the library overview` +
+    (n ? ` · ${n} track${n === 1 ? "" : "s"} from that time ticked.` : " · no tracks from that time.");
+  note.hidden = false;
+  await find();
+}
+
 try {
   document.getElementById("timezones").innerHTML =
     Intl.supportedValuesOf("timeZone").map(z => `<option value="${esc(z)}">`).join("");
@@ -985,7 +1013,7 @@ try {
 
 restoreForm();
 form.elements.camera_tz.addEventListener("change", renderTracks);
-Promise.all([loadTracks(), loadSuggestions(), loadNoLocation()]).then(fitMap).catch(e => {
+Promise.all([loadTracks(), loadSuggestions(), loadNoLocation()]).then(fitMap).then(searchFromOverview).catch(e => {
   document.getElementById("tracks").innerHTML = `<li class="notice error">${esc(e.message)}</li>`;
 }).then(() => Promise.all([
   // A search or write still running from before a reload: show it and refresh when it is done.

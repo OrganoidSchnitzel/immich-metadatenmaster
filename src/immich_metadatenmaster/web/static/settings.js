@@ -37,6 +37,7 @@ async function load() {
     if (el) { el.disabled = true; el.title = "Set by an environment variable"; }
   }
   document.getElementById("locked-note").hidden = !data.locked.length;
+  renderPassword(data.password, data.password_min_length);
   document.getElementById("data-dir").textContent = data.data_dir;
   document.getElementById("key-hint").textContent = data.locked.includes("immich_api_key")
     ? "Set by an environment variable."
@@ -80,6 +81,55 @@ form.addEventListener("submit", async (ev) => {
   } catch (e) {
     saveStatus.textContent = e.message;
   }
+});
+
+// --- password ------------------------------------------------------------------------------
+
+const pwForm = document.getElementById("password-form");
+const pwStatus = document.getElementById("pw-status");
+let minLength = 8;
+
+function renderPassword(state, min) {
+  minLength = min || minLength;
+  const text = {
+    none: "No password: everyone who can open this page can change your photos in Immich. Set one if others " +
+      "can reach the tool (on your network or from the internet).",
+    set: "A password is set. Browsers stay logged in for 30 days; a new password logs out all others.",
+    env: "The password is set by the UI_PASSWORD environment variable and can only be changed there.",
+  }[state];
+  document.getElementById("pw-state").textContent = text;
+  document.getElementById("pw-fields").hidden = state === "env";
+  document.getElementById("pw-current").hidden = state !== "set";
+  document.getElementById("pw-remove").hidden = state !== "set";
+  document.getElementById("pw-save").textContent = state === "set" ? "Change password" : "Set password";
+  const logout = document.getElementById("logout");
+  if (logout) logout.hidden = state === "none";
+}
+
+async function savePassword(newPassword) {
+  pwStatus.textContent = "Saving…";
+  try {
+    const r = await api("PUT", "/api/settings/password", { current: pwForm.elements.current.value, new: newPassword });
+    pwForm.reset();
+    renderPassword(r.password);
+    pwStatus.textContent = r.password === "none" ? "Password removed." : "Password saved.";
+  } catch (e) {
+    pwStatus.textContent = e.message;
+  }
+}
+
+pwForm.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = pwForm.elements;
+  if (f.new.value.length < minLength) { pwStatus.textContent = `Use at least ${minLength} characters.`; return; }
+  if (f.new.value !== f.repeat.value) { pwStatus.textContent = "The two new passwords differ."; return; }
+  await savePassword(f.new.value);
+});
+
+document.getElementById("pw-remove").addEventListener("click", async () => {
+  if (!pwForm.elements.current.value) { pwStatus.textContent = "Enter the current password first."; return; }
+  if (!confirm("Remove the password? Everyone who can reach this page can then use it.")) return;
+  await savePassword("");
 });
 
 load().catch(e => { saveStatus.textContent = e.message; });

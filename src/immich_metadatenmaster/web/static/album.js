@@ -3,6 +3,7 @@
 const app = document.getElementById("app");
 const albumId = app.dataset.album;
 const immichUrl = app.dataset.immich;
+const listKind = app.dataset.list;  // a list from the library overview instead of an album
 const grid = document.getElementById("grid");
 const jobEl = document.getElementById("job");
 const selCount = document.getElementById("sel-count");
@@ -65,7 +66,9 @@ function statusHtml(a, buttons = true) {
 
 function render() {
   if (!assets.length) {
-    grid.innerHTML = `<p class="muted">This album is empty. If you are reusing it as a working album, upload the next batch of scans into it in Immich.</p>`;
+    grid.innerHTML = listKind
+      ? `<p class="muted">Nothing left in this list. <a href="/#library">Back to the library overview</a></p>`
+      : `<p class="muted">This album is empty. If you are reusing it as a working album, upload the next batch of scans into it in Immich.</p>`;
     updateSelection();
     return;
   }
@@ -133,7 +136,7 @@ const removeBox = document.getElementById("remove-from-album");
 
 /** Fields for requests that write dates: the album to clean up, if the user wants that. */
 function writeOptions() {
-  return { album_id: albumId, remove_from_album: removeBox.checked };
+  return { album_id: albumId, remove_from_album: Boolean(removeBox && removeBox.checked) };
 }
 
 function showResult(result) {

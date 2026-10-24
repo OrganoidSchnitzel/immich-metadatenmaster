@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -84,11 +85,25 @@ CREATE TABLE IF NOT EXISTS place_name (
     name TEXT NOT NULL,            -- "" if the geocoder knows no name there
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS library_scan (
+    asset_id TEXT PRIMARY KEY,     -- every photo and video seen by the last library scan
+    month TEXT NOT NULL,           -- "2019-07" from its date in Immich, or "unknown"
+    flags INTEGER NOT NULL,        -- SCAN_* bits: what it lacks
+    file_name TEXT NOT NULL,
+    type TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS library_scan_month ON library_scan (month);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 """
+
+# What the library scan found missing (bits of library_scan.flags).
+SCAN_NO_LOCATION = 1
+SCAN_NO_DATE = 2      # no capture date in the file, and none in its name
+SCAN_NAME_DATE = 4    # the file name holds a date Immich does not show
+_MONTH = re.compile(r"^\d{4}-\d{2}$")
 
 
 @dataclass(frozen=True)
@@ -275,6 +290,7 @@ class Store:
             self._db.executemany("INSERT OR REPLACE INTO change VALUES (?, ?, ?, ?, ?)",
                                  [(batch_id, aid, name, json.dumps(old), json.dumps(new))
                                   for aid, name, old, new in changes])
+            self._scan_written(kind, changes)
         return batch_id
 
     def change_batches(self, limit: int = 200) -> list[dict[str, Any]]:
@@ -313,6 +329,8 @@ class Store:
         with self._lock, self._db:
             self._db.executemany("INSERT OR REPLACE INTO no_location VALUES (?, ?, ?)",
                                  [(aid, name, _now()) for aid, name in items.items()])
+            self._db.executemany("UPDATE library_scan SET flags = flags & ? WHERE asset_id = ?",
+                                 [(~SCAN_NO_LOCATION, aid) for aid in items])
 
     def unmark_no_location(self, asset_ids: list[str]) -> None:
         with self._lock, self._db:
@@ -338,6 +356,66 @@ class Store:
     def save_place_name(self, key: str, name: str) -> None:
         with self._lock, self._db:
             self._db.execute("INSERT OR REPLACE INTO place_name VALUES (?, ?, ?)", (key, name, _now()))
+
+    # --- library overview -------------------------------------------------------------------
+
+    def replace_scan(self, rows: list[tuple[str, str, int, str, str]]) -> None:
+        """Store a finished library scan: (asset_id, month, flags, file_name, type) per photo or video."""
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM library_scan")
+            self._db.executemany("INSERT OR REPLACE INTO library_scan VALUES (?, ?, ?, ?, ?)", rows)
+
+    def scan_months(self) -> dict[str, dict[str, int]]:
+        """Per month: photos and videos, and how many lack a location, a date or show a wrong one."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT month, COUNT(*), SUM((flags & ?) != 0), SUM((flags & ?) != 0), SUM((flags & ?) != 0) "
+                "FROM library_scan GROUP BY month",
+                (SCAN_NO_LOCATION, SCAN_NO_DATE, SCAN_NAME_DATE)).fetchall()
+        return {r[0]: {"total": r[1], "no_location": r[2], "no_date": r[3], "name_date": r[4]} for r in rows}
+
+    def scan_count(self, period: str) -> int:
+        """Photos and videos the last scan saw in a month ("2019-07"), a year ("2019") or "unknown"."""
+        where, args = _period(period)
+        with self._lock:
+            return int(self._db.execute(f"SELECT COUNT(*) FROM library_scan WHERE {where}", args).fetchone()[0])
+
+    def scan_ids(self, flag: int, period: str) -> dict[str, list[str]]:
+        """The photos of a period with the given SCAN_* bit, by month."""
+        where, args = _period(period)
+        with self._lock:
+            rows = self._db.execute(f"SELECT month, asset_id FROM library_scan WHERE (flags & ?) != 0 AND {where}",
+                                    [flag, *args]).fetchall()
+        out: dict[str, list[str]] = {}
+        for month, asset_id in rows:
+            out.setdefault(month, []).append(asset_id)
+        return out
+
+    def update_scan(self, rows: dict[str, tuple[int, str]], gone: list[str] | None = None) -> None:
+        """New flags and month of rescanned photos (id -> (flags, month)); forget deleted ones."""
+        with self._lock, self._db:
+            self._db.executemany("UPDATE library_scan SET flags = ?, month = ? WHERE asset_id = ?",
+                                 [(flags, month, aid) for aid, (flags, month) in rows.items()])
+            self._db.executemany("DELETE FROM library_scan WHERE asset_id = ?", [(a,) for a in gone or []])
+
+    def date_written_ids(self) -> set[str]:
+        """Photos whose date was written by this tool (and not undone): their file name no longer counts."""
+        with self._lock:
+            rows = self._db.execute("SELECT DISTINCT c.asset_id FROM change c JOIN change_batch b "
+                                    "ON b.id = c.batch_id WHERE b.kind = 'date' AND b.undone_at IS NULL").fetchall()
+        return {r[0] for r in rows}
+
+    def _scan_written(self, kind: str, changes: list[tuple[str, str, dict[str, Any], dict[str, Any]]]) -> None:
+        """Keep the library overview right after a write (called inside a transaction)."""
+        if kind == "location":
+            self._db.executemany("UPDATE library_scan SET flags = flags & ? WHERE asset_id = ?",
+                                 [(~SCAN_NO_LOCATION, aid) for aid, *_ in changes])
+        elif kind == "date":
+            # The photo now has a capture date, chosen by the user; it may have moved to another month.
+            self._db.executemany(
+                "UPDATE library_scan SET flags = flags & ?, month = COALESCE(?, month) WHERE asset_id = ?",
+                [(~(SCAN_NO_DATE | SCAN_NAME_DATE), _month_of_stamp(new.get("date")), aid)
+                 for aid, _, _, new in changes])
 
     # --- small values -----------------------------------------------------------------------
 
@@ -366,6 +444,21 @@ _SUGGESTION_TABLES = {"name_date", "geo_suggestion", "version_date"}
 def _check_table(table: str) -> None:
     if table not in _SUGGESTION_TABLES:
         raise ValueError(f"unknown suggestion table {table}")
+
+
+def _period(period: str) -> tuple[str, list[str]]:
+    """SQL condition for a month ("2019-07"), a year ("2019") or "unknown"."""
+    if period == "unknown" or _MONTH.match(period):
+        return "month = ?", [period]
+    if re.fullmatch(r"\d{4}", period):
+        return "month LIKE ?", [f"{period}-%"]
+    raise ValueError(f"Not a month or year: {period}")
+
+
+def _month_of_stamp(stamp: str | None) -> str | None:
+    """"1987-07-02T12:00:00.000+02:00" → "1987-07" (the wall clock time Immich shows)."""
+    month = (stamp or "")[:7]
+    return month if _MONTH.match(month) else None
 
 
 def _chunks(items: list[str], size: int = 500):
