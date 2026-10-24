@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}{{ album.albumName }}{% endblock %}
+{% block content %}
+<div id="app" data-album="{{ album.id }}" data-immich="{{ immich_url }}" data-list="{{ list_kind }}">
+  <div class="section-head">
+    <h1>{{ album.albumName }}</h1>
+    {% if is_list %}
+    <a class="muted" href="/#library">← Library overview</a>
+    {% else %}
+    <a class="muted" href="{{ immich_url }}/albums/{{ album.id }}" target="_blank" rel="noopener">Open in Immich {{ icon("open") }}</a>
+    {% endif %}
+  </div>
+  {% if list_kind == "no-date" %}
+  <p class="muted list-intro">Photos and videos whose files have no capture date (and no date in the name), so Immich
+    files them by another date, often when they were scanned, saved or uploaded. Write the date you know or estimate it
+    from the faces. A photo leaves this list once it has a date.</p>
+  {% elif list_kind == "name-date" %}
+  <p class="muted list-intro">The file names hold a date that Immich does not show. Select the photos
+    (<kbd>A</kbd> for all) and click <em>Read file names</em> to see the suggestions. A photo leaves this list once
+    its date is written.</p>
+  {% endif %}
+
+  <section id="people-strip" class="people-strip" hidden></section>
+
+  <section class="panel sticky">
+    <div class="selection row">
+      <strong id="sel-count">0 selected</strong>
+      <button data-select="all">All</button>
+      <button data-select="none">None</button>
+      <button data-select="undated">Not dated yet</button>
+      <button data-select="suggested">With suggestion</button>
+      <span class="muted shortcut-hint">Shift-click: range · <kbd>A</kbd> all · <kbd>Esc</kbd> none ·
+        <kbd>V</kbd> or double-click: large view</span>
+    </div>
+
+    <div class="actions">
+      <form id="known-form" class="action">
+        <h3>I know the date</h3>
+        <div class="row">
+          <input id="known-date" placeholder="e.g. 1987, 06.1987, 14.06.1987, 1985-1989, 1980s" autocomplete="off">
+          <button type="submit" class="primary">Write date</button>
+        </div>
+        <div id="known-hint" class="hint muted">Year or month is enough.</div>
+        <label><input id="keep-order" type="checkbox" checked> Keep file order in the timeline (1 minute apart)</label>
+      </form>
+
+      <form id="estimate-form" class="action">
+        <h3>Estimate from faces</h3>
+        <div class="row">
+          <label>Not before <input id="not-before" placeholder="year" size="6"></label>
+          <label>Not after <input id="not-after" placeholder="year" size="6"></label>
+          <button type="submit" class="primary">Estimate</button>
+        </div>
+        <label><input id="joint" type="checkbox"> Selected photos are from the same event (combine all faces)</label>
+      </form>
+
+      <form id="name-form" class="action">
+        <h3>Date from the file name</h3>
+        <div class="row">
+          <button type="submit" class="primary">Read file names</button>
+        </div>
+        <div class="hint muted">For names like <code>IMG-20190713-WA0001.jpg</code>, <code>PXL_20230101_123456789.jpg</code>
+          or <code>1987-07-01 Holiday.jpg</code>. Only photos whose date in Immich differs get a suggestion.</div>
+      </form>
+    </div>
+    <div class="row suggestions-row">
+      <strong>Suggestions:</strong>
+      <button type="button" id="apply" class="primary" disabled>Write suggestions</button>
+      <button type="button" id="discard" disabled>Discard suggestions</button>
+      <span class="muted">Nothing is written to Immich before you click “Write”.</span>
+    </div>
+    {% if not is_list %}
+    <label class="remove-opt"><input id="remove-from-album" type="checkbox"{% if remove_default %} checked{% endif %}>
+      Remove photos from this album once their date is written <span class="muted">(they stay in Immich)</span></label>
+    {% endif %}
+    <div id="job" class="job" hidden></div>
+    <div id="job-result" class="job-result" hidden></div>
+  </section>
+
+  <section>
+    <div id="grid" class="grid"><p class="muted">Loading photos…</p></div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='album.js') }}"></script>{% endblock %}

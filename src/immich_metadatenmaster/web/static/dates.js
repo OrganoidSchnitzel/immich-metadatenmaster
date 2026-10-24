@@ -60,9 +60,9 @@ function renderVersions() {
     <article class="card ${vSelected.has(v.id) ? "selected" : ""}" data-id="${esc(v.id)}">
       <img src="/thumb/${esc(v.id)}" alt="" loading="lazy">
       <span class="check"></span>
-      ${v.type === "VIDEO" ? `<span class="kind" title="Video">▶</span>` : ""}
-      <button type="button" class="zoom" data-zoom title="Large view (V or double-click)">⤢</button>
-      <a class="open" href="${esc(vImmich)}/photos/${esc(v.id)}" target="_blank" rel="noopener" title="Open in Immich">↗</a>
+      ${v.type === "VIDEO" ? `<span class="kind" title="Video">${icon("play")}</span>` : ""}
+      <button type="button" class="zoom" data-zoom title="Large view (V or double-click)" aria-label="Large view">${icon("expand")}</button>
+      <a class="open" href="${esc(vImmich)}/photos/${esc(v.id)}" target="_blank" rel="noopener" title="Open in Immich" aria-label="Open in Immich">${icon("open")}</a>
       <div class="body">
         <div class="file" title="${esc(v.file_name)}">${esc(v.file_name)}</div>
         ${versionHtml(v)}

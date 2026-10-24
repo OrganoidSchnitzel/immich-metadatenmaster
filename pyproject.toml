@@ -38,7 +38,8 @@ immich-metadatenmaster = "immich_metadatenmaster.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-immich_metadatenmaster = ["web/templates/*.html", "web/static/*", "web/static/vendor/leaflet/*", "web/static/vendor/leaflet/images/*"]
+immich_metadatenmaster = ["web/templates/*.html", "web/templates/*.svg", "web/static/*", "web/static/vendor/leaflet/*",
+                          "web/static/vendor/leaflet/images/*", "web/static/vendor/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

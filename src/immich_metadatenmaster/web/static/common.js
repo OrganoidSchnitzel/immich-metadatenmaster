@@ -18,6 +18,11 @@ async function api(method, url, body) {
   return data;
 }
 
+/** An icon from the sprite in the page (Material Design Icons). */
+function icon(name) {
+  return `<svg class="i" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+}
+
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -103,7 +108,7 @@ async function refreshJobPill() {
   const j = list.find(x => x.status === "running") || list[0];
   const href = j.meta.href || (j.meta.album_id ? `/album/${encodeURIComponent(j.meta.album_id)}`
     : j.meta.page ? `/${j.meta.page}` : "");
-  const text = `⏳ ${esc(j.label)} ${j.status === "queued" ? "(waiting)" : `${j.done}/${j.total || "?"}`}`;
+  const text = `${icon("progress")} ${esc(j.label)} ${j.status === "queued" ? "(waiting)" : `${j.done}/${j.total || "?"}`}`;
   pill.innerHTML = (href ? `<a href="${esc(href)}">${text}</a>` : text) +
     (list.length > 1 ? ` <span class="muted">+${list.length - 1} waiting</span>` : "");
   pill.hidden = false;
@@ -163,10 +168,10 @@ function openViewer(opts) {
     el.setAttribute("role", "dialog");
     el.setAttribute("aria-modal", "true");
     el.innerHTML = `
-      <button type="button" class="viewer-close" data-v="close" aria-label="Close (Esc)">×</button>
-      <button type="button" class="viewer-nav prev" data-v="prev" aria-label="Previous (←)">‹</button>
-      <figure><img alt=""><span class="viewer-video" hidden>▶ Video: open it in Immich to play</span></figure>
-      <button type="button" class="viewer-nav next" data-v="next" aria-label="Next (→)">›</button>
+      <button type="button" class="viewer-close" data-v="close" aria-label="Close (Esc)">${icon("close")}</button>
+      <button type="button" class="viewer-nav prev" data-v="prev" aria-label="Previous (←)">${icon("left")}</button>
+      <figure><img alt=""><span class="viewer-video" hidden>${icon("play")} Video: open it in Immich to play</span></figure>
+      <button type="button" class="viewer-nav next" data-v="next" aria-label="Next (→)">${icon("right")}</button>
       <div class="viewer-info"></div>`;
     document.body.appendChild(el);
     el.addEventListener("click", (ev) => {
@@ -223,7 +228,7 @@ function renderViewer() {
     ${d.html || ""}
     <div class="row">
       <button type="button" data-v="select" class="${sel ? "primary" : ""}">${sel ? "✓ Selected" : "Select"} <span class="muted">(Space)</span></button>
-      ${opts.immichUrl ? `<a href="${esc(opts.immichUrl)}/photos/${esc(id)}" target="_blank" rel="noopener">Open in Immich ↗</a>` : ""}
+      ${opts.immichUrl ? `<a href="${esc(opts.immichUrl)}/photos/${esc(id)}" target="_blank" rel="noopener">Open in Immich ${icon("open")}</a>` : ""}
     </div>`;
   // Load the neighbours in the background so that browsing is quick.
   for (const k of [-1, 1]) {
@@ -237,5 +242,26 @@ document.getElementById("logout")?.addEventListener("click", async (ev) => {
   try { await api("POST", "/api/logout"); } catch (e) { /* logged out either way */ }
   location.href = "/login";
 });
+
+// --- theme and menu ------------------------------------------------------------------------
+
+/** Light or dark: follows the system until the user picks one, which is remembered in this browser. */
+document.getElementById("theme-toggle")?.addEventListener("click", () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("metadatenmaster.theme", root.dataset.theme); } catch (e) { /* not remembered */ }
+});
+
+/** The sidebar slides in on narrow screens. */
+function setNav(open) {
+  document.body.classList.toggle("nav-open", open);
+  document.getElementById("nav-toggle")?.setAttribute("aria-expanded", String(open));
+  const scrim = document.getElementById("scrim");
+  if (scrim) scrim.hidden = !open;
+}
+document.getElementById("nav-toggle")?.addEventListener("click", () => setNav(!document.body.classList.contains("nav-open")));
+document.getElementById("scrim")?.addEventListener("click", () => setNav(false));
+document.addEventListener("keydown", ev => { if (ev.key === "Escape" && document.body.classList.contains("nav-open")) setNav(false); });
 
 refreshJobPill();

@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Dates{% endblock %}
+{% block content %}
+{% if error %}
+  <div class="notice error"><strong>Cannot reach Immich.</strong> {{ error }}</div>
+{% endif %}
+
+<section class="intro">
+  <h1>Date photos</h1>
+  <ol class="steps">
+    <li>Put a batch of photos (e.g. scans) into its own <strong>Immich album</strong> and let Immich finish face detection.</li>
+    <li>Name the people in Immich and set their <a href="/people">birthdays</a>.</li>
+    <li>Open the album here. Write the date you know, estimate it from the ages of the people in the photos,
+      or take it from the file names. Suggestions are only written when you accept them.</li>
+  </ol>
+  <p class="muted">Photos without a date that are not in an album: the <a href="/#library">library overview</a> on the
+    start page lists them by month and opens them like an album.</p>
+</section>
+
+<section>
+  <div class="section-head">
+    <h2>Albums</h2>
+    {% if version %}<span class="muted">Immich {{ version }}</span>{% endif %}
+  </div>
+  {% if albums %}
+  <ul class="album-list">
+    {% for a in albums %}
+    <li>
+      <a href="/album/{{ a.id }}">
+        {% if a.albumThumbnailAssetId %}<img src="/thumb/{{ a.albumThumbnailAssetId }}" alt="" loading="lazy">{% else %}<span class="noimg"></span>{% endif %}
+        <span class="name">{{ a.albumName }}</span>
+        <span class="muted">{{ a.assetCount }} item{{ "" if a.assetCount == 1 else "s" }}</span>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% elif not error %}
+  <p class="muted">No albums yet. Create one in Immich for each batch of photos.</p>
+  {% endif %}
+</section>
+
+<section id="versions" data-immich="{{ immich_url }}">
+  <h2>Versions with a different date</h2>
+  <p class="muted">HDR merges, panoramas and edited copies (<code>IMG_1234-HDR.dng</code>, <code>IMG_1234_edited.jpg</code>,
+    <code>IMG_1234 (1).jpg</code> …) often lose the capture date, so Immich shows them on the day they were exported.
+    This finds them and suggests the date of the original (<code>IMG_1234.CR2</code>), and its location if the version has none.</p>
+  <div class="row">
+    <label>Only in album
+      <select id="versions-album">
+        <option value="">(whole library)</option>
+        {% for a in albums %}<option value="{{ a.id }}">{{ a.albumName }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="button" id="versions-find" class="primary">Find versions</button>
+  </div>
+  <div id="versions-job" class="job" hidden></div>
+  <div id="versions-result" class="job-result" hidden></div>
+  <div id="versions-review" class="panel" hidden>
+    <div class="selection row">
+      <strong id="versions-count"></strong>
+      <button type="button" data-vselect="all">All</button>
+      <button type="button" data-vselect="none">None</button>
+      <button type="button" id="versions-apply" class="primary" disabled>Copy dates</button>
+      <button type="button" id="versions-discard" disabled>Discard</button>
+      <span class="muted shortcut-hint">Shift-click: range · <kbd>A</kbd> all · <kbd>Esc</kbd> none · <kbd>V</kbd> large view</span>
+    </div>
+    <div id="versions-grid" class="grid"></div>
+  </div>
+</section>
+
+<section>
+  <h2>Calibration</h2>
+  <p>
+    Model: <code>{{ calibration.backend }}</code> &middot;
+    {% if calibration.calibrated %}
+      calibrated on {{ calibration.samples }} faces ({{ calibration.created_at | local_time }}),
+      {{ calibration.people_with_bias }} people with a personal correction.
+    {% else %}
+      <strong>not calibrated yet</strong> &ndash; a generic error model is used.
+    {% endif %}
+  </p>
+  <p class="muted">Calibration runs the model on photos of your people whose date is known (digital camera photos, and scans you dated here) and learns how far off it typically is, per age and per person.</p>
+  <div class="row">
+    <label>Photos per person <input id="per-person" type="number" min="5" max="1000" value="60"></label>
+    <button id="calibrate" class="primary">Run calibration</button>
+  </div>
+  <div id="calibration-job" class="job" hidden></div>
+  <div id="calibration-report"></div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='dates.js') }}"></script>{% endblock %}

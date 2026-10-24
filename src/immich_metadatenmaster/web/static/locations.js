@@ -619,9 +619,9 @@ function cardHtml(it) {
     <article class="card ${selected.has(it.id) ? "selected" : ""}" data-id="${esc(it.id)}">
       <img src="/thumb/${esc(it.id)}" alt="" loading="lazy">
       <span class="check"></span>
-      ${it.type === "VIDEO" ? `<span class="kind" title="Video">▶</span>` : ""}
-      <button type="button" class="zoom" data-zoom title="Large view (V or double-click)">⤢</button>
-      <a class="open" href="${esc(immichUrl)}/photos/${esc(it.id)}" target="_blank" rel="noopener" title="Open in Immich">↗</a>
+      ${it.type === "VIDEO" ? `<span class="kind" title="Video">${icon("play")}</span>` : ""}
+      <button type="button" class="zoom" data-zoom title="Large view (V or double-click)" aria-label="Large view">${icon("expand")}</button>
+      <a class="open" href="${esc(immichUrl)}/photos/${esc(it.id)}" target="_blank" rel="noopener" title="Open in Immich" aria-label="Open in Immich">${icon("open")}</a>
       <div class="body">
         <div class="file" title="${esc(it.file_name)}">${esc(it.file_name)}</div>
         <div class="muted">${esc(fmtLocal(it.local))}${it.camera ? ` · ${esc(it.camera)}` : ""}</div>
@@ -915,7 +915,7 @@ function placeHtml(it) {
   if (!placeNamesOn || it.status !== "ok") return "";
   const key = placeKey(it.lat, it.lon);
   const name = placeNames.get(key);
-  return `<div class="place" data-place="${key}">${name === undefined ? "…" : name ? `📍 ${esc(name)}` : ""}</div>`;
+  return `<div class="place" data-place="${key}">${name === undefined ? "…" : name ? `${icon("locations")} ${esc(name)}` : ""}</div>`;
 }
 
 /** Fill in the names of the places of the shown suggestions, a few at a time (they are cached on the server). */
@@ -932,7 +932,7 @@ async function loadPlaceNames() {
       if (!r.pending || r.error) keys.forEach(k => { if (!placeNames.has(k)) placeNames.set(k, ""); });
       for (const el of document.querySelectorAll("[data-place]")) {
         const name = placeNames.get(el.dataset.place);
-        if (name !== undefined) el.textContent = name ? `📍 ${name}` : "";
+        if (name !== undefined) el.innerHTML = name ? `${icon("locations")} ${esc(name)}` : "";
       }
       if (r.error || !r.enabled) break;
     }
