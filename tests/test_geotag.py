@@ -210,7 +210,7 @@ def test_located_photos_far_off_the_track_get_its_position(fake, geo, guesser, t
     wrong = fake.add_photo("IMG_1.CR2", "2024-07-01T10:30:00", lat=47.5, lon=11.5)
     close = fake.add_photo("IMG_2.CR2", "2024-07-01T10:30:00", lat=47.0305, lon=11.0)  # about 55 m off: fine
     later = fake.add_photo("IMG_3.CR2", "2024-07-01T15:00:00", lat=47.5, lon=11.5)  # not on the track
-    phone = fake.add_photo("PXL_1.jpg", "2024-07-01T10:30:00", tz="Europe/Berlin", lat=47.5, lon=11.5,
+    phone = fake.add_photo("PXL_1.jpg", "2024-07-01T10:30:00", tz="Europe/Berlin", lat=47.51, lon=11.52,
                            make="Google", model="Pixel 8")  # a phone's own GPS is trusted
     run = geo.find(berlin(start=datetime(2024, 7, 1, 6, tzinfo=UTC), end=datetime(2024, 7, 1, 18, tzinfo=UTC)))
     assert run["relocated"] == 0 and geo.suggestions() == {}  # only on request
@@ -227,6 +227,34 @@ def test_located_photos_far_off_the_track_get_its_position(fake, geo, guesser, t
     assert (fake.assets[wrong].latitude, fake.assets[wrong].longitude) == (pytest.approx(47.03), 11.0)
     guesser.history.undo(geo.store.change_batches()[0]["id"])
     assert (fake.assets[wrong].latitude, fake.assets[wrong].longitude) == (47.5, 11.5)
+
+
+def test_phone_photos_placed_together_by_hand_get_track_positions(fake, geo, tour):
+    # A phone without GPS: all its photos of the day were put at one point on the map, hours apart.
+    placed = [fake.add_photo(f"IMG2024070{i}.jpg", f"2024-07-01T{t}:00", tz="Europe/Berlin", lat=39.6, lon=2.9,
+                             make="realme", model="GT 2") for i, t in enumerate(["10:10", "10:40", "11:50"])]
+    own_gps = fake.add_photo("PXL_1.jpg", "2024-07-01T10:30:00", tz="Europe/Berlin", lat=47.5, lon=11.5,
+                             make="Google", model="Pixel 8")
+    later = fake.add_photo("IMG_9.CR2", "2024-07-01T15:00:00", lat=47.2, lon=11.2)
+    run = geo.find(berlin(start=datetime(2024, 7, 1, 6, tzinfo=UTC), end=datetime(2024, 7, 1, 18, tzinfo=UTC),
+                          include_located=True))
+    s = geo.suggestions()
+    assert run["relocated"] == 3 and all(s[a]["status"] == "ok" and s[a]["source"] == "gpx" for a in placed)
+    assert s[own_gps]["keep_reason"] == "probably the phone's own GPS, which is kept"
+    assert s[later]["keep_reason"] == "outside the tracks' time span (nearest track: 3 h 00 min earlier)"
+
+
+def test_photos_placed_by_hand_may_use_a_planned_route(fake, geo):
+    route = geo.add_track("route.gpx", gpx([(47.0 + i * 0.01, 11.0, None) for i in range(13)], name="Planned"))
+    geo.set_track_times(route["id"], datetime(2024, 7, 1, 8, tzinfo=UTC), datetime(2024, 7, 1, 10, tzinfo=UTC))
+    placed = [fake.add_photo(f"IMG_{i}.CR2", f"2024-07-01T{t}:00", lat=39.6, lon=2.9)
+              for i, t in enumerate(["10:10", "10:40", "11:50"])]
+    single = fake.add_photo("IMG_9.CR2", "2024-07-01T10:30:00", lat=47.5, lon=11.5)
+    run = geo.find(berlin(start=datetime(2024, 7, 1, 6, tzinfo=UTC), end=datetime(2024, 7, 1, 18, tzinfo=UTC),
+                          include_located=True))
+    s = geo.suggestions()
+    assert run["relocated"] == 3 and all(s[a]["status"] == "ok" for a in placed)
+    assert s[single]["keep_reason"].startswith("no recorded GPX track")
 
 def test_album_filter(fake, geo, tour):
     inside = fake.add_photo("IMG_1.CR2", "2024-07-01T10:30:00", album="trip")

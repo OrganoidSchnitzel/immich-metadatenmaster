@@ -523,6 +523,7 @@ function visibleSelectedIds() {
 function suggestionHtml(it) {
   if (it.status === "located") {
     return `<div class="badge estimated">Has a location: ${Number(it.current_lat).toFixed(5)}, ${Number(it.current_lon).toFixed(5)}
+      ${it.keep_reason ? `<div class="muted">Kept: ${esc(it.keep_reason)}.</div>` : ""}
       <div class="muted">Place it on the map to change it.</div></div>`;
   }
   if (it.status !== "ok") return `<div class="badge problem">No suggestion: ${esc(it.reason || "")}</div>`;
