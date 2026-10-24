@@ -99,6 +99,13 @@ therefore needs to know:
 - **Clock offset**: if the camera's clock was simply wrong, e.g. `+1:00:00` when it was still on
   winter time, or `-0:03:20` when it ran 3 min 20 s fast. When writing, you can *also correct the
   photo times* by the offset (this part can be undone in History).
+- **Local time of the place**: Immich shows a camera photo without a time zone at its clock time and
+  files it as if that were UTC. A camera still on German time in Colorado shows 21:45 for a photo
+  taken at 13:45 there, and lands hours away from your phone photos in the timeline. Tick *Also set
+  the local time of the place* when writing: the time zone is looked up from the location (offline)
+  and the capture time is written in it, e.g. `13:45 America/Denver`, including any clock offset.
+  The cards show *Local time there* beforehand. Photos that store their own time zone are left
+  alone; this part can be undone in History too (CLI: `--local-time`).
 
 After a search, **Camera clocks** lists every camera with photos without a location, each with its
 own offset:

@@ -26,7 +26,7 @@ from ..auth import COOKIE, MIN_LENGTH, SESSION_S, Auth, LoginThrottle, hash_pass
 from ..config import ENV_NAMES, ENV_ONLY, Settings, env_overrides
 from ..dates import parse_date_spec, parse_year_bound
 from ..geocode import GeocodeError, reverse as reverse_geocode, search as geocode_search
-from ..geotag import GeoOptions, GeoTagger
+from ..geotag import GeoOptions, GeoTagger, lacks_zone, place_zone
 from ..gpx import MAX_GPX_BYTES, GpxError
 from ..immich import Asset, ImmichClient, ImmichError
 from ..jobs import JobManager
@@ -148,6 +148,7 @@ class PasswordChange(BaseModel):
 class GeoApplyRequest(BaseModel):
     asset_ids: list[str] = Field(min_length=1)
     fix_time: bool = False
+    local_time: bool = False
 
 
 def _zone(name: str) -> ZoneInfo:
@@ -745,6 +746,9 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         tagger = geo()
         items = [{"id": aid, **data} for aid, data in tagger.suggestions().items()]
         items.sort(key=lambda x: x.get("instant") or "")
+        for it in items:  # for photos without a time zone: the zone of the suggested place
+            if it.get("status") == "ok" and lacks_zone(it.get("time_zone")) and it.get("instant"):
+                it["place_tz"] = place_zone(it["lat"], it["lon"])
         return {"run": tagger.run(), "items": items}
 
     @app.get("/api/geo/clock-candidates")
@@ -827,7 +831,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     def geo_apply(body: GeoApplyRequest) -> dict[str, Any]:
         tagger = geo()
         return jobs.submit("geo-apply", lambda progress: tagger.apply(
-            body.asset_ids, fix_time=body.fix_time, progress=progress),
+            body.asset_ids, fix_time=body.fix_time, local_time=body.local_time, progress=progress),
             label="Writing locations", meta={"page": "locations"}).to_dict()
 
     # --- history ----------------------------------------------------------------------------

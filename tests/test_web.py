@@ -183,7 +183,7 @@ def test_locations_flow(client, fake):
 
     assert client.post("/api/geo/place", json={"asset_ids": [b], "lat": 45.0, "lon": 9.0}).json() == {"placed": 1}
     job = wait(client, client.post("/api/geo/apply", json={"asset_ids": [a, b]}).json())
-    assert job["result"] == {"written": 2, "skipped": 0, "times_fixed": 0}
+    assert job["result"] == {"written": 2, "skipped": 0, "times_fixed": 0, "local_times": 0}
     assert fake.assets[a].latitude == pytest.approx(47.04) and fake.assets[b].latitude == 45.0
     assert client.get("/api/geo/suggestions").json()["items"] == []
 
