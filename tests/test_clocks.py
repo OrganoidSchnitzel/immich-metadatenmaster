@@ -86,3 +86,24 @@ def test_clock_check_via_web(fake, guesser, trip):
         assert job["label"] == "Checking camera clocks"
         result = wait(client, job)["result"]
     assert result["cameras"][0]["camera"] == "Canon EOS 77D" and result["cameras"][0]["confidence"] == "high"
+
+
+def test_cameras_that_store_a_time_zone_are_checked_too(fake, geo):
+    # Newer DSLRs store the zone set in their menu, but their clock can still be off: 1 h behind here.
+    for i, moment in enumerate(MOMENTS[:4]):
+        c = fake.add_photo(f"IMG_{i}.CR3", shifted(moment, timedelta(hours=-1)), tz="Europe/Berlin",
+                           model="Canon EOS R6")
+        p = fake.add_photo(f"IMG2024070{i}.jpg", shifted(moment, timedelta(seconds=30)), tz="Europe/Berlin",
+                           make="realme", model="GT 2")
+        fake.scenes[c] = fake.scenes[p] = f"scene {i}"
+    result = geo.check_clocks(day())
+    assert [(d["camera"], d["phone"], d["photos"]) for d in result["devices"]] == \
+        [("Canon EOS R6", False, 4), ("realme GT 2", True, 4)]
+    [canon] = result["cameras"]
+    assert canon["camera"] == "Canon EOS R6" and abs(canon["offset_s"] - 3630) <= 30
+
+
+def test_is_phone():
+    from immich_metadatenmaster.clocks import is_phone
+    assert is_phone("realme", "GT 2") and is_phone("Apple", "iPhone 15") and is_phone("Sony", "XQ-DQ54")
+    assert not is_phone("Canon", "Canon EOS 77D") and not is_phone("SONY", "ILCE-7M4") and not is_phone(None, None)

@@ -345,10 +345,9 @@ class GeoTagger:
                 if a.id in skip or not in_scope(t):
                     continue
                 # Only the tracks can say a location is wrong: other photos may share the same wrong one
-                # (e.g. a whole day placed at one point on the map). Photos that store a time zone are
-                # mostly from phones, which record their own position: those are left alone, unless
-                # their position was clearly set by hand.
-                own_gps = opts.use_photo_tz and not lacks_zone(a.time_zone) and a.id not in placed
+                # (e.g. a whole day placed at one point on the map). Phones record their own position:
+                # theirs is left alone, unless it was clearly set by hand.
+                own_gps = clocks.is_phone(a.camera_make, a.camera_model) and a.id not in placed
                 # A position set by hand is worse than even a planned route with times entered by the user.
                 usable = tracks if a.id in placed else recorded
                 match, keep = None, ""
@@ -377,6 +376,7 @@ class GeoTagger:
 
         self.store.save_suggestions(TABLE, results, replace_all=True)
         cameras = self._camera_stats(unlocated, candidates, results, opts)
+        self._located_stats(cameras, results, opts)
         run = {
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "options": opts.to_dict(),
@@ -479,15 +479,23 @@ class GeoTagger:
 
         refs: list[clocks.Shot] = []
         cams: dict[str, list[clocks.Shot]] = {}
+        devices: dict[str, dict[str, Any]] = {}
         for a in assets.values():
-            if not a.shown or a.local_datetime is None:
+            if not a.shown or a.local_datetime is None or not a.camera:
                 continue
             local = a.local_datetime.isoformat()
-            if not lacks_zone(a.time_zone) and zone_of(a.time_zone) and a.taken_at:
-                refs.append(clocks.Shot(a.id, a.file_name, a.camera, a.taken_at.timestamp(), local))
-            elif a.camera and a.type == "IMAGE" and (album_ids is None or a.id in album_ids):
-                t = a.local_datetime.replace(tzinfo=cam_tz)
-                cams.setdefault(a.camera, []).append(clocks.Shot(a.id, a.file_name, a.camera, t.timestamp(), local))
+            phone = clocks.is_phone(a.camera_make, a.camera_model)
+            d = devices.setdefault(a.camera, {"camera": a.camera, "phone": phone, "photos": 0})
+            d["photos"] += 1
+            if phone:  # its clock sets itself: the reference
+                t = photo_instant(a, cam_tz, True)
+                if t is not None:
+                    refs.append(clocks.Shot(a.id, a.file_name, a.camera, t.timestamp(), local))
+            elif a.type == "IMAGE" and (album_ids is None or a.id in album_ids):
+                # Read like the search does, so that the offset found is the one the search needs.
+                t = photo_instant(a, cam_tz, opts.use_photo_tz)
+                if t is not None:
+                    cams.setdefault(a.camera, []).append(clocks.Shot(a.id, a.file_name, a.camera, t.timestamp(), local))
 
         smart = {"available": True, "error": ""}
 
@@ -510,7 +518,8 @@ class GeoTagger:
             results.append({"camera": name, "photos": len(cams[name]), "current_s": opts.offset_for(name), **found})
             progress(len(windows) + i + 1, len(windows) + len(names))
         return {"cameras": results, "references": len(refs), "smart_search": smart["available"],
-                "smart_search_error": smart["error"]}
+                "smart_search_error": smart["error"],
+                "devices": sorted(devices.values(), key=lambda d: (d["phone"], -d["photos"]))}
 
     def _placed_by_hand(self, with_location: list[tuple[float, Asset]]) -> set[str]:
         """Photos whose location was written with this tool, or that share their exact point with photos
@@ -641,6 +650,28 @@ class GeoTagger:
             if results.get(a.id, {}).get("status") == "ok":
                 stats[a.camera]["suggested"] += 1
         return sorted(stats.values(), key=lambda s: (-s["without_location"], s["camera"]))
+
+    @staticmethod
+    def _located_stats(cameras: list[dict[str, Any]], results: dict[str, dict[str, Any]], opts: GeoOptions) -> None:
+        """Per camera, the listed photos that already have a location: how many move to a track, and why the
+        others keep theirs."""
+        by_name = {c["camera"]: c for c in cameras}
+        for item in results.values():
+            if item.get("current_lat") is None:
+                continue
+            c = by_name.get(item["camera"])
+            if c is None:
+                c = by_name[item["camera"]] = {"camera": item["camera"], "without_location": 0, "in_scope": 0,
+                                               "suggested": 0, "offset_s": opts.offset_for(item["camera"]),
+                                               "photos": []}
+                cameras.append(c)
+            c["with_location"] = c.get("with_location", 0) + 1
+            if item.get("status") == "ok":
+                c["moved"] = c.get("moved", 0) + 1
+            else:
+                reason = (item.get("keep_reason") or "kept").split(" (")[0]
+                kept = c.setdefault("kept", {})
+                kept[reason] = kept.get(reason, 0) + 1
 
     # --- clock offsets --------------------------------------------------------------------------
 

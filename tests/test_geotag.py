@@ -242,6 +242,9 @@ def test_phone_photos_placed_together_by_hand_get_track_positions(fake, geo, tou
     assert run["relocated"] == 3 and all(s[a]["status"] == "ok" and s[a]["source"] == "gpx" for a in placed)
     assert s[own_gps]["keep_reason"] == "probably the phone's own GPS, which is kept"
     assert s[later]["keep_reason"] == "outside the tracks' time span (nearest track: 3 h 00 min earlier)"
+    stats = {c["camera"]: c for c in run["cameras"]}
+    assert (stats["realme GT 2"]["with_location"], stats["realme GT 2"]["moved"]) == (3, 3)
+    assert stats["Canon EOS 80D"]["kept"] == {"outside the tracks' time span": 1}
 
 
 def test_photos_placed_by_hand_may_use_a_planned_route(fake, geo):
