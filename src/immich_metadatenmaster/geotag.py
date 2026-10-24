@@ -38,6 +38,10 @@ _SIBLING_WINDOW = timedelta(minutes=10)
 MAX_SPEED_M_S = 70.0
 # A photo that already has a location gets a track position only if it is at least this far away.
 RELOCATE_MIN_M = 100.0
+# This many photos at exactly the same point, taken further apart than this, were placed by hand:
+# a GPS never gives the same position twice over hours.
+SHARED_POINT_PHOTOS = 3
+SHARED_POINT_SPAN = timedelta(hours=1)
 _SCREENSHOT = re.compile(r"screenshot|screen ?shot|bildschirmfoto|bildschirmaufnahme|capture d.[ée]cran|"
                          r"schermafbeelding|captura de pantalla|scrnli|^svid_", re.I)
 _GRAPHIC_EXT = (".png", ".gif", ".webp", ".bmp", ".svg")
@@ -341,6 +345,7 @@ class GeoTagger:
         # Recorded tracks only: a planned route's times are a guess.
         recorded = [t for t in tracks if not t[2].assumed_times]
         if opts.include_located:
+            placed = self._placed_by_hand(with_location)
             for ts, a in with_location:
                 raw = datetime.fromtimestamp(ts, timezone.utc)
                 t = raw + timedelta(seconds=opts.offset_for(a.camera))
@@ -348,12 +353,21 @@ class GeoTagger:
                     continue
                 # Only the tracks can say a location is wrong: other photos may share the same wrong one
                 # (e.g. a whole day placed at one point on the map). Photos that store a time zone are
-                # mostly from phones, which record their own position: those are left alone.
-                own_zone = opts.use_photo_tz and not lacks_zone(a.time_zone)
-                match = self._on_tracks(t, recorded, tol, max_gap) if recorded and not own_zone else None
-                if match and distance_m(TrackPoint(a.latitude, a.longitude),  # type: ignore[arg-type]
-                                        TrackPoint(match["lat"], match["lon"])) < RELOCATE_MIN_M:
-                    match = None
+                # mostly from phones, which record their own position: those are left alone, unless
+                # their position was clearly set by hand.
+                own_gps = opts.use_photo_tz and not lacks_zone(a.time_zone) and a.id not in placed
+                match, keep = None, ""
+                if not recorded:
+                    keep = "no recorded GPX track to compare with"
+                elif own_gps:
+                    keep = "probably the phone's own GPS, which is kept"
+                else:
+                    match = self._on_tracks(t, recorded, tol, max_gap)
+                    if match is None:
+                        keep = "not on a track at this time"
+                    elif distance_m(TrackPoint(a.latitude, a.longitude),  # type: ignore[arg-type]
+                                    TrackPoint(match["lat"], match["lon"])) < RELOCATE_MIN_M:
+                        match, keep = None, "matches the track"
                 # Without a track position, the time was not used, so it is not corrected either.
                 item = self._base(a, t if match else raw, opts, cam_tz, correct_time=match is not None)
                 item.update(current_lat=a.latitude, current_lon=a.longitude)
@@ -361,7 +375,7 @@ class GeoTagger:
                     item.update(match, status="ok", confidence=_confidence(match))
                     relocated += 1
                 else:
-                    item.update(status="located")
+                    item.update(status="located", keep_reason=keep)
                 results[a.id] = item
                 located_listed += 1
 
@@ -418,6 +432,19 @@ class GeoTagger:
         best = min(close, key=apart)
         return {"source": "sibling", "lat": best.latitude, "lon": best.longitude, "ele": None,
                 "detail": best.file_name, "ref_id": best.id, "time_diff_s": 0.0, "method": "copied"}
+
+    def _placed_by_hand(self, with_location: list[tuple[float, Asset]]) -> set[str]:
+        """Photos whose location was written with this tool, or that share their exact point with photos
+        taken hours apart (placed together on a map)."""
+        points: dict[tuple[float, float], list[tuple[float, str]]] = {}
+        for ts, a in with_location:
+            points.setdefault((round(a.latitude, 5), round(a.longitude, 5)), []).append((ts, a.id))  # type: ignore[arg-type]
+        placed = self.store.location_written_ids()
+        for group in points.values():
+            times = [ts for ts, _ in group]
+            if len(group) >= SHARED_POINT_PHOTOS and max(times) - min(times) > SHARED_POINT_SPAN.total_seconds():
+                placed.update(aid for _, aid in group)
+        return placed
 
     @staticmethod
     def _on_tracks(t: datetime, tracks: list[tuple[str, str, Track]], tol: timedelta,

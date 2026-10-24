@@ -75,7 +75,9 @@ without a location are listed), or enter a time range. Tick *Also list photos th
 location* to correct a wrong location: move them on the map, or let the GPX tracks do it. A photo
 whose location is more than 100 m off a recorded track at its time gets the track position as a
 suggestion ("replaces …"), e.g. after a whole day was placed at one point. Photos that store a time
-zone (mostly phones, with their own GPS) and planned routes without times are left out of this.
+zone (mostly phones, with their own GPS) keep their location, unless it was clearly set by hand: written
+with this tool, or shared exactly by 3 or more photos taken over an hour apart. Planned routes without
+times are not used for this. Each photo that keeps its location says why on its card.
 
 The search uses [Photon](https://github.com/komoot/photon), the OpenStreetMap geocoder of Komoot
 (`https://photon.komoot.io`). This server sends it the search text and the map centre (to prefer

@@ -398,6 +398,13 @@ class Store:
                                  [(flags, month, aid) for aid, (flags, month) in rows.items()])
             self._db.executemany("DELETE FROM library_scan WHERE asset_id = ?", [(a,) for a in gone or []])
 
+    def location_written_ids(self) -> set[str]:
+        """Photos whose location was written by this tool (and not undone)."""
+        with self._lock:
+            rows = self._db.execute("SELECT DISTINCT c.asset_id FROM change c JOIN change_batch b "
+                                    "ON b.id = c.batch_id WHERE b.kind = 'location' AND b.undone_at IS NULL").fetchall()
+        return {r[0] for r in rows}
+
     def date_written_ids(self) -> set[str]:
         """Photos whose date was written by this tool (and not undone): their file name no longer counts."""
         with self._lock:
