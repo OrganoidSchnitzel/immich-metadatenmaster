@@ -356,15 +356,18 @@ class GeoTagger:
                 # mostly from phones, which record their own position: those are left alone, unless
                 # their position was clearly set by hand.
                 own_gps = opts.use_photo_tz and not lacks_zone(a.time_zone) and a.id not in placed
+                # A position set by hand is worse than even a planned route with times entered by the user.
+                usable = tracks if a.id in placed else recorded
                 match, keep = None, ""
-                if not recorded:
-                    keep = "no recorded GPX track to compare with"
-                elif own_gps:
+                if own_gps:
                     keep = "probably the phone's own GPS, which is kept"
+                elif not usable:
+                    keep = "no recorded GPX track to compare with (planned routes only correct photos placed by hand)" \
+                        if tracks else "no GPX track used"
                 else:
-                    match = self._on_tracks(t, recorded, tol, max_gap)
+                    match = self._on_tracks(t, usable, tol, max_gap)
                     if match is None:
-                        keep = "not on a track at this time"
+                        keep = self._off_track(t, usable)
                     elif distance_m(TrackPoint(a.latitude, a.longitude),  # type: ignore[arg-type]
                                     TrackPoint(match["lat"], match["lon"])) < RELOCATE_MIN_M:
                         match, keep = None, "matches the track"
@@ -432,6 +435,16 @@ class GeoTagger:
         best = min(close, key=apart)
         return {"source": "sibling", "lat": best.latitude, "lon": best.longitude, "ele": None,
                 "detail": best.file_name, "ref_id": best.id, "time_diff_s": 0.0, "method": "copied"}
+
+    @staticmethod
+    def _off_track(t: datetime, tracks: list[tuple[str, str, Track]]) -> str:
+        """Why a photo's time finds no track position, with the distance in time to the nearest track (a hint
+        at a wrong camera clock)."""
+        if any(track.start <= t <= track.end for _, _, track in tracks):
+            return "taken during a long pause in the recording"
+        gap, before = min((track.start - t, True) if t < track.start else (t - track.end, False)
+                          for _, _, track in tracks)
+        return f"outside the tracks' time span (nearest track: {_format_span(gap)} {'later' if before else 'earlier'})"
 
     def _placed_by_hand(self, with_location: list[tuple[float, Asset]]) -> set[str]:
         """Photos whose location was written with this tool, or that share their exact point with photos
@@ -683,6 +696,17 @@ class GeoTagger:
 
     def _tag_value(self, name: str) -> str | None:
         return f"{self.settings.tag_root}/{name}" if self.settings.tag_root else None
+
+
+def _format_span(span: timedelta) -> str:
+    """3 min · 2 h 05 min · 3 days 4 h"""
+    minutes = int(span.total_seconds() // 60)
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 48:
+        return f"{hours} h {minutes:02d} min"
+    return f"{hours // 24} days {hours % 24} h"
 
 
 def _format_offset(seconds: int) -> str:
