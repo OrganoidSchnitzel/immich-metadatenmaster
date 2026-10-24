@@ -36,6 +36,8 @@ _TZ_SLACK = timedelta(hours=14)
 _SIBLING_WINDOW = timedelta(minutes=10)
 # Faster than this between the photos before and after means a wrong clock or a flight: no interpolation.
 MAX_SPEED_M_S = 70.0
+# A photo that already has a location gets a track position only if it is at least this far away.
+RELOCATE_MIN_M = 100.0
 _SCREENSHOT = re.compile(r"screenshot|screen ?shot|bildschirmfoto|bildschirmaufnahme|capture d.[ée]cran|"
                          r"schermafbeelding|captura de pantalla|scrnli|^svid_", re.I)
 _GRAPHIC_EXT = (".png", ".gif", ".webp", ".bmp", ".svg")
@@ -335,15 +337,31 @@ class GeoTagger:
             results[a.id] = item
             progress(len(fetch) + i + 1, steps)
 
-        located_listed = 0
+        located_listed = relocated = 0
+        # Recorded tracks only: a planned route's times are a guess.
+        recorded = [t for t in tracks if not t[2].assumed_times]
         if opts.include_located:
             for ts, a in with_location:
-                t = datetime.fromtimestamp(ts, timezone.utc)
+                raw = datetime.fromtimestamp(ts, timezone.utc)
+                t = raw + timedelta(seconds=opts.offset_for(a.camera))
                 if a.id in skip or not in_scope(t):
                     continue
-                # No clock correction for these: their time was not used to find their location.
-                item = self._base(a, t, opts, cam_tz, correct_time=False)
-                item.update(status="located", current_lat=a.latitude, current_lon=a.longitude)
+                # Only the tracks can say a location is wrong: other photos may share the same wrong one
+                # (e.g. a whole day placed at one point on the map). Photos that store a time zone are
+                # mostly from phones, which record their own position: those are left alone.
+                own_zone = opts.use_photo_tz and not lacks_zone(a.time_zone)
+                match = self._on_tracks(t, recorded, tol, max_gap) if recorded and not own_zone else None
+                if match and distance_m(TrackPoint(a.latitude, a.longitude),  # type: ignore[arg-type]
+                                        TrackPoint(match["lat"], match["lon"])) < RELOCATE_MIN_M:
+                    match = None
+                # Without a track position, the time was not used, so it is not corrected either.
+                item = self._base(a, t if match else raw, opts, cam_tz, correct_time=match is not None)
+                item.update(current_lat=a.latitude, current_lon=a.longitude)
+                if match:
+                    item.update(match, status="ok", confidence=_confidence(match))
+                    relocated += 1
+                else:
+                    item.update(status="located")
                 results[a.id] = item
                 located_listed += 1
 
@@ -355,7 +373,7 @@ class GeoTagger:
             "track_ids": [tid for tid, _, _ in tracks],
             "searched": len(assets), "with_location": len(located.assets), "candidates": len(candidates),
             "suggested": sum(sources.values()), "sources": dict(sources), "hints": hints, "cameras": cameras,
-            "whole_album": whole_album, "located_listed": located_listed,
+            "whole_album": whole_album, "located_listed": located_listed, "relocated": relocated,
             "no_location_needed": sum(1 for a in assets.values() if a.id in skip),
             "located": [[round(a.latitude, 6), round(a.longitude, 6)] for a in located.assets[:3000]
                         if a.latitude is not None and a.longitude is not None],

@@ -550,7 +550,8 @@ function suggestionHtml(it) {
 }
 
 /** Photos without a location still in the list (not counting listed photos that already have one). */
-function pendingCount() { return items.filter(it => it.status !== "located").length; }
+// Photos without a location still in the list (photos that have one are only listed on request).
+function pendingCount() { return items.filter(it => it.current_lat === undefined || it.current_lat === null).length; }
 
 function render() {
   review.hidden = !run;
@@ -562,6 +563,8 @@ function render() {
     `Search of ${esc(new Date(run.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }))}: ${run.searched} photos looked at, ${run.with_location} already had a location, ` +
     `${run.candidates} without one ${run.whole_album ? "in the album" : "in the time span"}, <strong>${run.suggested} with a suggestion</strong>${src ? ` (${esc(src)})` : ""}.` +
     (run.no_location_needed ? ` ${run.no_location_needed} skipped as “no location needed”.` : "") +
+    (run.relocated ? ` <strong>${run.relocated} photo${run.relocated === 1 ? "" : "s"} that already had a location ` +
+      `${run.relocated === 1 ? "is" : "are"} more than 100 m off the track</strong> and get${run.relocated === 1 ? "s" : ""} its position.` : "") +
     offsetsSummary(opts) +
     (pendingCount() < run.candidates ? ` ${run.candidates - pendingCount()} already written, discarded or marked.` : "");
 
