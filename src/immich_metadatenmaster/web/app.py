@@ -721,11 +721,9 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         geo().delete_track(track_id)
         return {"deleted": track_id}
 
-    @app.post("/api/geo/find")
-    def geo_find(body: GeoRequest) -> dict[str, Any]:
-        tagger = geo()
+    def geo_options(body: GeoRequest) -> GeoOptions:
         try:
-            tz_name = body.camera_tz or tagger.settings.timezone
+            tz_name = body.camera_tz or runtime.settings.timezone
             tz = _zone(tz_name)
             opts = GeoOptions(
                 track_ids=body.track_ids, use_tracks=body.use_tracks, start=_local(body.start, tz),
@@ -738,8 +736,20 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
             raise bad_request(exc) from exc
         if bool(opts.start) != bool(opts.end):
             raise bad_request(ValueError("Enter both ends of the time range, or neither."))
+        return opts
+
+    @app.post("/api/geo/find")
+    def geo_find(body: GeoRequest) -> dict[str, Any]:
+        tagger, opts = geo(), geo_options(body)
         return jobs.submit("geo-find", lambda progress: tagger.find(opts, progress=progress),
                            label="Searching photos without a location", meta={"page": "locations"}).to_dict()
+
+    @app.post("/api/geo/clock-check")
+    def geo_clock_check(body: GeoRequest) -> dict[str, Any]:
+        """Work out the cameras' clock offsets from photos of the same moments (nothing is written)."""
+        tagger, opts = geo(), geo_options(body)
+        return jobs.submit("geo-clocks", lambda progress: tagger.check_clocks(opts, progress=progress),
+                           label="Checking camera clocks", meta={"page": "locations"}).to_dict()
 
     @app.get("/api/geo/suggestions")
     def geo_suggestions() -> dict[str, Any]:

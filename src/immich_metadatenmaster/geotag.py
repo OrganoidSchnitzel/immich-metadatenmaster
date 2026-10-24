@@ -16,10 +16,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from tzfpy import get_tz
 
+from . import clocks
 from .config import Settings
 from .gpx import GpxError, ParsedGpx, Track, TrackPoint, distance_m, parse_gpx, simplify, total_distance_m, with_times
 from .history import History, iana_name, zone_of
-from .immich import Asset, ImmichClient
+from .immich import Asset, ImmichClient, ImmichError
 from .service import tag_assets
 from .store import Store
 
@@ -267,15 +268,7 @@ class GeoTagger:
         largest_offset = timedelta(seconds=max([abs(opts.offset_s), *map(abs, opts.camera_offsets.values())]))
         tracks = self._load_tracks(opts.track_ids) if opts.use_tracks else []
 
-        scopes: list[tuple[datetime, datetime]] = [(t.start - tol, t.end + tol) for _, _, t in tracks]
-        if opts.start and opts.end:
-            if opts.end <= opts.start:
-                raise ValueError("The end of the time range is before its start.")
-            scopes.append((opts.start, opts.end))
-        whole_album = not scopes and bool(opts.album_id)
-        if not scopes and not whole_album:
-            raise ValueError("Select a GPX track with times, enter a time range, or choose an album.")
-        scopes = _merge(scopes)
+        scopes, whole_album = self._scopes(opts, tracks, tol)
         slack = _TZ_SLACK + largest_offset + tol + timedelta(minutes=opts.nearby_min)
         fetch = _merge([(a - slack, b + slack) for a, b in scopes])
 
@@ -445,6 +438,79 @@ class GeoTagger:
         gap, before = min((track.start - t, True) if t < track.start else (t - track.end, False)
                           for _, _, track in tracks)
         return f"outside the tracks' time span (nearest track: {_format_span(gap)} {'later' if before else 'earlier'})"
+
+    @staticmethod
+    def _scopes(opts: GeoOptions, tracks: list[tuple[str, str, Track]], tol: timedelta
+                ) -> tuple[list[tuple[datetime, datetime]], bool]:
+        """The time spans to search: the tracks' and the range entered; or the whole album."""
+        scopes: list[tuple[datetime, datetime]] = [(t.start - tol, t.end + tol) for _, _, t in tracks]
+        if opts.start and opts.end:
+            if opts.end <= opts.start:
+                raise ValueError("The end of the time range is before its start.")
+            scopes.append((opts.start, opts.end))
+        whole_album = not scopes and bool(opts.album_id)
+        if not scopes and not whole_album:
+            raise ValueError("Select a GPX track with times, enter a time range, or choose an album.")
+        return _merge(scopes), whole_album
+
+    def check_clocks(self, opts: GeoOptions, progress: Progress = _noop) -> dict[str, Any]:
+        """For each camera that stores no time zone, work out its clock offset by comparing its photos with
+        photos whose clock is right (phones), in the search's time span and a day around it. Writes nothing."""
+        cam_tz = ZoneInfo(opts.camera_tz)
+        tracks = self._load_tracks(opts.track_ids) if opts.use_tracks else []
+        scopes, whole_album = self._scopes(opts, tracks, timedelta(minutes=opts.tolerance_min))
+        span = timedelta(seconds=clocks.SPAN_S) + _TZ_SLACK
+        album_ids: set[str] | None = None
+        if opts.album_id:
+            album = self.immich.album_all_assets(opts.album_id)
+            album_ids = {a.id for a in album}
+            if whole_album:
+                instants = [a.taken_at for a in album if a.taken_at]
+                if not instants:
+                    raise ValueError("No photos with a date in this album.")
+                scopes = [(min(instants), max(instants))]
+        assets: dict[str, Asset] = {}
+        windows = _merge([(a - span, b + span) for a, b in scopes])
+        for i, (a, b) in enumerate(windows):
+            assets.update((x.id, x) for x in self.immich.assets_taken_between(a, b))  # all cameras
+            if len(assets) > MAX_ASSETS:
+                raise ValueError(f"More than {MAX_ASSETS} photos in this time span. Use a shorter range.")
+            progress(i + 1, len(windows) + 1)
+
+        refs: list[clocks.Shot] = []
+        cams: dict[str, list[clocks.Shot]] = {}
+        for a in assets.values():
+            if not a.shown or a.local_datetime is None:
+                continue
+            local = a.local_datetime.isoformat()
+            if not lacks_zone(a.time_zone) and zone_of(a.time_zone) and a.taken_at:
+                refs.append(clocks.Shot(a.id, a.file_name, a.camera, a.taken_at.timestamp(), local))
+            elif a.camera and a.type == "IMAGE" and (album_ids is None or a.id in album_ids):
+                t = a.local_datetime.replace(tzinfo=cam_tz)
+                cams.setdefault(a.camera, []).append(clocks.Shot(a.id, a.file_name, a.camera, t.timestamp(), local))
+
+        smart = {"available": True, "error": ""}
+
+        def similar(shot: clocks.Shot) -> list[str]:
+            if not smart["available"]:
+                return []
+            t = datetime.fromtimestamp(shot.ts, timezone.utc)
+            try:
+                return [x.id for x in self.immich.similar_assets(shot.id, taken_after=t - span,
+                                                                 taken_before=t + span)]
+            except ImmichError as exc:
+                smart.update(available=False, error=str(exc))
+                return []
+
+        results = []
+        names = sorted(cams, key=lambda name: -len(cams[name]))
+        for i, name in enumerate(names):
+            # Never the camera itself: its own photos share its wrong clock.
+            found = clocks.estimate(cams[name], [r for r in refs if r.camera != name], similar)
+            results.append({"camera": name, "photos": len(cams[name]), "current_s": opts.offset_for(name), **found})
+            progress(len(windows) + i + 1, len(windows) + len(names))
+        return {"cameras": results, "references": len(refs), "smart_search": smart["available"],
+                "smart_search_error": smart["error"]}
 
     def _placed_by_hand(self, with_location: list[tuple[float, Asset]]) -> set[str]:
         """Photos whose location was written with this tool, or that share their exact point with photos

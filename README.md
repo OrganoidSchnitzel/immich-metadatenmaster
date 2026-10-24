@@ -121,6 +121,17 @@ own offset:
 - **Sync with another camera…** works out an offset for you: pick a photo of that camera, then the
   photo of your phone (whose clock sets itself) showing the same moment. The difference of their
   times is the offset.
+- **Check camera clocks automatically** (in the search form, under *Camera clock*) does that for every
+  camera at once, in the search's time span and a day around it, so photos that a wrong clock put
+  outside the span are found too. Two signs are combined:
+  - *Shared moments:* you often photograph the same moment with camera and phone. Shifted by the right
+    offset, many camera photos line up with a phone photo (within 2 minutes); by any other offset, few do.
+  - *Similar photos:* for a dozen camera photos, Immich's smart search finds the most similar phone
+    photos; each pair votes for an offset. This needs Immich's machine learning (on by default); without
+    it, only the times are compared.
+
+  Each camera gets a suggested offset with how sure it is and a few example pairs; **Use … and search**
+  takes it and searches again. Nothing is written to Immich.
 
 ## Dates
 
