@@ -12,7 +12,9 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from tzfpy import get_tz
 
 from .config import Settings
 from .gpx import GpxError, ParsedGpx, Track, TrackPoint, distance_m, parse_gpx, simplify, total_distance_m, with_times
@@ -52,6 +54,27 @@ SOURCES = {
 
 def _noop(done: int, total: int) -> None:
     pass
+
+
+def place_zone(lat: float, lon: float) -> str | None:
+    """The time zone at a position ("America/Denver"), from a map that comes with the tool."""
+    try:
+        name = get_tz(lon, lat)
+        ZoneInfo(name)
+    except (ValueError, ZoneInfoNotFoundError):
+        return None
+    return name or None
+
+
+def lacks_zone(name: str | None) -> bool:
+    """No time zone of its own: none, or UTC, which Immich assumes for camera clocks and videos."""
+    zone = zone_of(name)
+    return zone is None or zone == timezone.utc or (isinstance(zone, ZoneInfo) and zone.key in {"UTC", "Etc/UTC"})
+
+
+def local_stamp(instant: str, zone: str) -> str:
+    """A capture instant as the wall clock time at the place, e.g. "2022-08-25T13:45:44.000-06:00"."""
+    return datetime.fromisoformat(instant).astimezone(ZoneInfo(zone)).isoformat(timespec="milliseconds")
 
 
 @dataclass
@@ -561,8 +584,10 @@ class GeoTagger:
     def no_location(self) -> list[dict[str, str]]:
         return self.store.no_location()
 
-    def apply(self, asset_ids: list[str], *, fix_time: bool = False, progress: Progress = _noop) -> dict[str, Any]:
-        """Write the accepted locations (and, if asked, the clock-corrected times) to Immich."""
+    def apply(self, asset_ids: list[str], *, fix_time: bool = False, local_time: bool = False,
+              progress: Progress = _noop) -> dict[str, Any]:
+        """Write the accepted locations to Immich. If asked, also the clock-corrected times, or, for photos
+        without a time zone, the time at the place in its time zone (which includes the clock correction)."""
         stored = self.store.suggestions(TABLE, asset_ids)
         # (0, 0) is never suggested, and Immich would take it for "no location".
         todo = [aid for aid in asset_ids if (stored.get(aid) or {}).get("status") == "ok"
@@ -570,6 +595,7 @@ class GeoTagger:
         old = self.history.snapshots(todo)
         done: dict[str, list[str]] = {}
         times: list[tuple[str, str, dict[str, Any], dict[str, Any]]] = []
+        local_times: list[tuple[str, str, dict[str, Any], dict[str, Any]]] = []
         location_changes: dict[str, list[tuple[str, str, dict[str, Any], dict[str, Any]]]] = {}
         try:
             for i, aid in enumerate(todo):
@@ -581,7 +607,13 @@ class GeoTagger:
                     (aid, name, before,
                      {"latitude": s["lat"], "longitude": s["lon"], "source": s["source"], "detail": s.get("detail")}))
                 done.setdefault(s["source"], []).append(aid)
-                if fix_time and s.get("corrected"):
+                zone = place_zone(s["lat"], s["lon"]) if local_time and lacks_zone(s.get("time_zone")) \
+                    and s.get("instant") else None
+                if zone:
+                    stamp = local_stamp(s["instant"], zone)
+                    self.immich.set_date([aid], stamp, zone)
+                    local_times.append((aid, name, before, {"date": stamp, "time_zone": zone}))
+                elif fix_time and s.get("corrected"):
                     tz = s.get("corrected_tz")
                     self.immich.set_date([aid], s["corrected"], tz)
                     times.append((aid, name, before, {"date": s["corrected"], "time_zone": tz}))
@@ -596,11 +628,13 @@ class GeoTagger:
                 label = (f"Clock corrected by {_format_offset(offsets.pop())}" if len(offsets) == 1
                          else f"Clock corrected ({len(offsets)} different offsets)")
                 self.history.log("date", "clock", label, None, times)
+            self.history.log("date", "localtime", "Local time of the place", None, local_times)
             for source, ids in done.items():
                 tag_assets(self.immich, self._tag_value(SOURCES.get(source, ("", f"Location/{source}"))[1]), ids)
             self.store.delete_suggestions(TABLE, [aid for ids in done.values() for aid in ids])
         written = sum(len(ids) for ids in done.values())
-        return {"written": written, "skipped": len(asset_ids) - written, "times_fixed": len(times)}
+        return {"written": written, "skipped": len(asset_ids) - written, "times_fixed": len(times),
+                "local_times": len(local_times)}
 
     def _tag_value(self, name: str) -> str | None:
         return f"{self.settings.tag_root}/{name}" if self.settings.tag_root else None

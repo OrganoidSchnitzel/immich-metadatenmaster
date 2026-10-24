@@ -63,6 +63,23 @@ function fmtInstant(iso) {
 
 function fmtLocal(iso) { return iso ? iso.replace("T", " ").slice(0, 19) : "–"; }
 
+/** For photos without a time zone: when they were taken, as the clock time at the suggested place. */
+function placeTimeHtml(it) {
+  if (!it.place_tz || !it.instant) return "";
+  let t;
+  try {
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+      timeZone: it.place_tz, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(it.instant)).map(x => [x.type, x.value]));
+    t = `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
+  } catch (e) {
+    return "";
+  }
+  if (t === fmtLocal(it.corrected || it.local)) return "";
+  return `<div class="muted" title="Written with “Also set the local time of the place”">Local time there: ${esc(t)} (${esc(it.place_tz)})</div>`;
+}
+
 function fmtDiff(seconds) {
   if (seconds < 60) return `${Math.round(seconds)} s`;
   if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
@@ -550,6 +567,7 @@ function render() {
 
   renderCameras();
   document.getElementById("fix-time-opt").hidden = !items.some(it => it.corrected);
+  document.getElementById("local-time-opt").hidden = !items.some(it => it.place_tz);
 
   const cams = [...new Set(items.map(it => it.camera).filter(Boolean))].sort();
   const current = cameraFilter.value;
@@ -605,6 +623,7 @@ function cardHtml(it) {
         <div class="file" title="${esc(it.file_name)}">${esc(it.file_name)}</div>
         <div class="muted">${esc(fmtLocal(it.local))}${it.camera ? ` · ${esc(it.camera)}` : ""}</div>
         ${it.corrected ? `<div class="muted">Real time: ${esc(fmtLocal(it.corrected))}</div>` : ""}
+        ${placeTimeHtml(it)}
         ${suggestionHtml(it)}
       </div>
     </article>`;
@@ -622,6 +641,7 @@ function showLarge(id) {
         title: it.file_name, video: it.type === "VIDEO",
         html: `<div class="muted">${esc(fmtLocal(it.local))}${it.camera ? ` · ${esc(it.camera)}` : ""}</div>
           ${it.corrected ? `<div class="muted">Real time: ${esc(fmtLocal(it.corrected))}</div>` : ""}
+          ${placeTimeHtml(it)}
           ${suggestionHtml(it)}`,
       };
     },
@@ -961,18 +981,22 @@ applyBtn.addEventListener("click", async () => {
   const ids = chosen.map(it => it.id);
   const replacing = chosen.filter(it => it.current_lat !== undefined && it.current_lat !== null).length;
   const fixTime = !document.getElementById("fix-time-opt").hidden && document.getElementById("fix-time").checked;
+  const localTime = !document.getElementById("local-time-opt").hidden && document.getElementById("local-time").checked;
+  const zoneless = chosen.filter(it => it.place_tz).length;
   const msg = `Write the location of ${ids.length} photo${ids.length === 1 ? "" : "s"} to Immich?` +
     (replacing ? ` ${replacing} of them already have a location, which is replaced.` : "") +
     (fixTime ? "\n\nTheir capture times are corrected by their camera's clock offset as well." : "") +
+    (localTime && zoneless ? `\n\n${zoneless} of them store no time zone: their capture time is written as the local time of the place.` : "") +
     "\n\nYou can undo this in History.";
   if (!confirm(msg)) return;
   const resultEl = document.getElementById("apply-result");
   resultEl.hidden = true;
   try {
-    const job = await api("POST", "/api/geo/apply", { asset_ids: ids, fix_time: fixTime });
+    const job = await api("POST", "/api/geo/apply", { asset_ids: ids, fix_time: fixTime, local_time: localTime });
     const r = await followJob(job, document.getElementById("apply-job"), "Writing locations");
     resultEl.textContent = `Wrote ${r.written} location${r.written === 1 ? "" : "s"}` +
-      (r.times_fixed ? `, corrected ${r.times_fixed} time${r.times_fixed === 1 ? "" : "s"}` : "") + ". Immich updates the place names in the background.";
+      (r.times_fixed ? `, corrected ${r.times_fixed} time${r.times_fixed === 1 ? "" : "s"}` : "") +
+      (r.local_times ? `, set ${r.local_times} time${r.local_times === 1 ? "" : "s"} to the local time` : "") + ". Immich updates the place names in the background.";
     resultEl.hidden = false;
     await loadSuggestions();
   } catch (e) {

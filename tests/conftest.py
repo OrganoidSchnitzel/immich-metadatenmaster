@@ -234,7 +234,8 @@ class FakeImmich:
                 a = self.assets[aid]
                 a.exif_date = body["dateTimeOriginal"]
                 a.local_datetime = body["dateTimeOriginal"][:19] + ".000Z"
-                a.time_zone = body.get("timeZone") or a.time_zone
+                # Like Immich: without a timeZone field, a fixed offset in the date becomes the zone.
+                a.time_zone = body.get("timeZone") or _fixed_zone(body["dateTimeOriginal"]) or a.time_zone
             return httpx.Response(204)
         if m := re.fullmatch(r"/assets/([^/]+)", path):
             if m[1] not in self.assets:
@@ -282,6 +283,17 @@ class FakeImmich:
                 self.assets[aid].tags.add(value)
             return httpx.Response(200, json={"count": len(body["assetIds"])})
         return httpx.Response(404, json={"message": f"no fake for {method} {path}"})
+
+
+def _fixed_zone(stamp: str) -> str | None:
+    """The zone Immich takes from a date with an offset ("…+00:00" → "UTC", "…+02:00" → "UTC+2")."""
+    m = re.search(r"([+-])(\d{2}):(\d{2})$", stamp)
+    if not m:
+        return None
+    hours, minutes = int(m[2]), int(m[3])
+    if not hours and not minutes:
+        return "UTC"
+    return f"UTC{m[1]}{hours}" + (f":{minutes:02d}" if minutes else "")
 
 
 class FakeEstimator:

@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from immich_metadatenmaster.geotag import GeoOptions, photo_instant, sibling_key
+from immich_metadatenmaster.geotag import GeoOptions, lacks_zone, photo_instant, place_zone, sibling_key
 
 from conftest import gpx
 
@@ -107,7 +107,7 @@ def test_clock_offset_and_time_fix(fake, geo, tour):
     assert s["lat"] == pytest.approx(47.035) and s["corrected"] == "2024-07-01T10:35:00.000+02:00"
 
     result = geo.apply([a], fix_time=True)
-    assert result == {"written": 1, "skipped": 0, "times_fixed": 1}
+    assert result == {"written": 1, "skipped": 0, "times_fixed": 1, "local_times": 0}
     assert (fake.assets[a].latitude, fake.assets[a].longitude) == (pytest.approx(47.035), 11.0)
     assert fake.assets[a].exif_date == "2024-07-01T10:35:00.000+02:00"
     assert fake.assets[a].tags == {"Metadatenmaster/Location/GPX"}
@@ -116,6 +116,37 @@ def test_clock_offset_and_time_fix(fake, geo, tour):
     batches = geo.store.change_batches()
     assert [(b["kind"], b["source"]) for b in batches] == [("date", "clock"), ("location", "gpx")]
 
+
+
+def test_local_time_of_the_place(fake, geo, guesser):
+    """A camera still on German summer time in Colorado: its 21:45 was 13:45 there."""
+    cam = fake.add_photo("IMG_7206.JPG", "2022-08-25T21:45:44", make="Canon", model="Canon EOS 77D")
+    slow = fake.add_photo("IMG_7207.JPG", "2022-08-25T21:20:00", make="Canon", model="Canon EOS 6D")
+    phone = fake.add_photo("PXL_20220825_194600.jpg", "2022-08-25T13:46:00", tz="America/Denver",
+                           lat=40.3055, lon=-105.69113, make="Google", model="Pixel 6")
+    geo.find(berlin(use_tracks=False, start=datetime(2022, 8, 25, tzinfo=UTC), end=datetime(2022, 8, 26, tzinfo=UTC),
+                    nearby_min=30, camera_offsets={"Canon EOS 6D": 1800}))  # the 6D ran 30 minutes slow
+    s = geo.suggestions()
+    assert s[cam]["source"] == "nearby" and s[slow]["source"] == "nearby"
+
+    result = geo.apply([cam, slow], fix_time=True, local_time=True)
+    assert result == {"written": 2, "skipped": 0, "times_fixed": 0, "local_times": 2}
+    assert (fake.assets[cam].exif_date, fake.assets[cam].time_zone) == ("2022-08-25T13:45:44.000-06:00",
+                                                                        "America/Denver")
+    assert fake.assets[slow].exif_date == "2022-08-25T13:50:00.000-06:00"  # with the clock correction
+    assert fake.assets[phone].exif_date == "2022-08-25T13:46:00.000-06:00"  # has its own zone: untouched
+    batch = geo.store.change_batches()[0]
+    assert (batch["kind"], batch["source"], batch["label"]) == ("date", "localtime", "Local time of the place")
+
+    guesser.history.undo(batch["id"])
+    # Back to 21:45 without a real zone (Immich takes "+00:00" as UTC, which is what it assumed before).
+    assert (fake.assets[cam].exif_date, fake.assets[cam].time_zone) == ("2022-08-25T21:45:44.000+00:00", "UTC")
+
+
+def test_place_zone():
+    assert place_zone(40.3055, -105.69113) == "America/Denver" and place_zone(47.4211, 10.9853) == "Europe/Berlin"
+    assert all(lacks_zone(z) for z in (None, "", "UTC", "UTC+0", "Etc/UTC", "nonsense"))
+    assert not any(lacks_zone(z) for z in ("Europe/Berlin", "UTC+2", "America/Denver"))
 
 def test_time_zone_hint(fake, geo, tour):
     for i, local in enumerate(["10:02", "10:30", "11:55"]):

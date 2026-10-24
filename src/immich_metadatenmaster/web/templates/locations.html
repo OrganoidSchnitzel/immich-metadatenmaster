@@ -114,6 +114,7 @@
     <div class="row">
       <button type="button" id="geo-apply" class="primary" disabled>Write locations</button>
       <label class="check" id="fix-time-opt" hidden title="Only if the camera's clock was wrong, not if just the time zone above was"><input type="checkbox" id="fix-time"> Also correct the photo times by the clock offset</label>
+      <label class="check" id="local-time-opt" hidden title="For photos that store no time zone (most cameras): the capture time is written in the time zone of the place, e.g. a camera still on German time in Colorado: 21:45 → 13:45 America/Denver. Includes the clock offset."><input type="checkbox" id="local-time"> Also set the local time of the place</label>
       <button type="button" id="geo-place" disabled>Place selected on the map…</button>
       <button type="button" id="geo-discard" disabled>Discard</button>
       <button type="button" id="geo-no-location" disabled title="Screenshots, documents …: never suggest a location for them again">No location needed</button>

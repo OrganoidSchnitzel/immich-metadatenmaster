@@ -178,9 +178,11 @@ def cmd_geotag(args: argparse.Namespace, settings: Settings) -> None:
         print(f"Hint: {h['matches']} photos of {camera} would fit the tracks with the clock shifted by "
               f"{h['hours']:+d} h (--camera-offset \"{h['camera']}={h['hours']:+d}:00:00\"); or check --camera-tz.")
     if args.apply:
-        out = geo.apply(list(geo.suggestions()), fix_time=args.fix_time, progress=_progress("Writing"))
+        out = geo.apply(list(geo.suggestions()), fix_time=args.fix_time, local_time=args.local_time,
+                        progress=_progress("Writing"))
         fixed = f", corrected {out['times_fixed']} times" if out["times_fixed"] else ""
-        print(f"Wrote {out['written']} locations{fixed}")
+        local = f", set {out['local_times']} times to the local time" if out["local_times"] else ""
+        print(f"Wrote {out['written']} locations{fixed}{local}")
     else:
         print("Suggestions saved. Review them on the Locations page, or re-run with --apply to write them.")
 
@@ -254,6 +256,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--album", help="only photos in this album (name or id)")
     p.add_argument("--apply", action="store_true", help="write the suggestions to Immich right away")
     p.add_argument("--fix-time", action="store_true", help="with --apply and --offset: also correct the photo times")
+    p.add_argument("--local-time", action="store_true",
+                   help="with --apply: write the times of photos without a time zone as the local time of the place")
     p.set_defaults(fn=cmd_geotag)
 
     args = parser.parse_args(argv)

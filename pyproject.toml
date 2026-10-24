@@ -17,6 +17,7 @@ dependencies = [
     "pillow>=10",
     "numpy>=1.26",
     "tzdata",
+    "tzfpy>=1.0",
 ]
 
 [project.optional-dependencies]
