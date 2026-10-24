@@ -79,9 +79,9 @@ function render() {
     return `<article class="card ${selected.has(a.id) ? "selected" : ""}" data-id="${esc(a.id)}">
       <img src="/thumb/${esc(a.id)}" alt="" loading="lazy">
       <span class="check"></span>
-      ${a.type === "VIDEO" ? `<span class="kind" title="Video">▶</span>` : ""}
-      <button type="button" class="zoom" data-zoom title="Large view (V or double-click)">⤢</button>
-      <a class="open" href="${esc(immichUrl)}/photos/${esc(a.id)}" target="_blank" rel="noopener" title="Open in Immich">↗</a>
+      ${a.type === "VIDEO" ? `<span class="kind" title="Video">${icon("play")}</span>` : ""}
+      <button type="button" class="zoom" data-zoom title="Large view (V or double-click)" aria-label="Large view">${icon("expand")}</button>
+      <a class="open" href="${esc(immichUrl)}/photos/${esc(a.id)}" target="_blank" rel="noopener" title="Open in Immich" aria-label="Open in Immich">${icon("open")}</a>
       <div class="body">
         <div class="file" title="${esc(a.file_name)}">${esc(a.file_name)}</div>
         <div class="muted">In Immich: ${yearOf(a.date)}</div>

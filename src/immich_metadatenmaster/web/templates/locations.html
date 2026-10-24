@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon %}
 {% block title %}Locations{% endblock %}
 {% block head %}<link rel="stylesheet" href="{{ url_for('static', path='vendor/leaflet/leaflet.css') }}">{% endblock %}
 {% block content %}
@@ -17,7 +18,7 @@
         <h2>1. GPX tracks</h2>
         <label class="drop" id="drop">
           <input type="file" id="gpx-file" accept=".gpx,application/gpx+xml" multiple hidden>
-          <strong>Drop GPX files here</strong> or click to choose them.
+          {{ icon("upload") }}<strong>Drop GPX files here</strong> or click to choose them.
           <span class="muted">Komoot: open a completed tour → ⋯ → <em>Download GPX</em>. Strava, Garmin and other apps work the same way.</span>
         </label>
         <div id="upload-status" class="hint"></div>
@@ -134,7 +135,7 @@
   <dialog id="sync" class="sync">
     <form method="dialog" class="sync-head">
       <strong id="sync-title"></strong>
-      <button value="close" aria-label="Close">×</button>
+      <button value="close" aria-label="Close">{{ icon("close") }}</button>
     </form>
     <p id="sync-text" class="muted"></p>
     <div id="sync-body"></div>

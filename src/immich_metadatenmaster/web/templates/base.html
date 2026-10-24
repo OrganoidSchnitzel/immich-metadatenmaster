@@ -4,27 +4,50 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Immich Metadatenmaster{% endblock %}</title>
+  <script>
+    // The chosen theme before the first paint (no flash of the wrong one).
+    try { const t = localStorage.getItem("metadatenmaster.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
   <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
   {% block head %}{% endblock %}
 </head>
-<body>
+{% from "_macros.html" import icon %}
+<body{% if bare %} class="bare"{% endif %}>
+  {% include "_icons.svg" %}
   <header class="topbar">
-    <a class="brand" href="/">Immich Metadatenmaster</a>
     {% if not bare %}
-    <nav>
-      {% if configured %}
-      <a href="/dates"{% if nav.startswith('/dates') or nav.startswith('/album') %} class="active"{% endif %}>Dates</a>
-      <a href="/locations"{% if nav.startswith('/locations') %} class="active"{% endif %}>Locations</a>
-      <a href="/people"{% if nav.startswith('/people') %} class="active"{% endif %}>People &amp; birthdays</a>
-      <a href="/history"{% if nav.startswith('/history') %} class="active"{% endif %}>History</a>
-      {% endif %}
-      <a href="/settings"{% if nav.startswith('/settings') %} class="active"{% endif %}>Settings</a>
-      <a href="/login" id="logout"{% if not password_on %} hidden{% endif %}>Log out</a>
-    </nav>
-    <span id="job-pill" class="job-pill" hidden></span>
+    <button type="button" class="icon-btn nav-toggle" id="nav-toggle" aria-label="Menu" aria-controls="sidebar"
+            aria-expanded="false">{{ icon("menu") }}</button>
     {% endif %}
+    <a class="brand" href="/">
+      <span class="logo">{{ icon("library") }}</span>
+      <span class="brand-name">Metadatenmaster</span>
+      <span class="brand-for">for Immich</span>
+    </a>
+    <span class="spacer"></span>
+    {% if not bare %}<span id="job-pill" class="job-pill" hidden></span>{% endif %}
+    <button type="button" class="icon-btn" id="theme-toggle" aria-label="Dark or light theme" title="Dark or light theme">
+      <span class="when-light">{{ icon("dark") }}</span><span class="when-dark">{{ icon("light") }}</span>
+    </button>
   </header>
-  <main>{% block content %}{% endblock %}</main>
+  <div class="shell">
+    {% if not bare %}
+    <nav id="sidebar" class="sidebar" aria-label="Main">
+      <a class="nav-item{% if nav == '/' %} active{% endif %}" href="/">{{ icon("home") }}<span>Overview</span></a>
+      {% if configured %}
+      <a class="nav-item{% if nav.startswith('/dates') or nav.startswith('/album') %} active{% endif %}" href="/dates">{{ icon("dates") }}<span>Dates</span></a>
+      <a class="nav-item{% if nav.startswith('/locations') %} active{% endif %}" href="/locations">{{ icon("locations") }}<span>Locations</span></a>
+      <a class="nav-item{% if nav.startswith('/people') %} active{% endif %}" href="/people">{{ icon("people") }}<span>People &amp; birthdays</span></a>
+      <a class="nav-item{% if nav.startswith('/history') %} active{% endif %}" href="/history">{{ icon("history") }}<span>History</span></a>
+      {% endif %}
+      <div class="nav-sep"></div>
+      <a class="nav-item{% if nav.startswith('/settings') %} active{% endif %}" href="/settings">{{ icon("settings") }}<span>Settings</span></a>
+      <a href="/login" id="logout"{% if not password_on %} hidden{% endif %} class="nav-item">{{ icon("logout") }}<span>Log out</span></a>
+    </nav>
+    <div class="scrim" id="scrim" hidden></div>
+    {% endif %}
+    <main>{% block content %}{% endblock %}</main>
+  </div>
   <script src="{{ url_for('static', path='common.js') }}"></script>
   {% block scripts %}{% endblock %}
 </body>

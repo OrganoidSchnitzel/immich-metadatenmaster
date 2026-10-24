@@ -204,6 +204,8 @@ description, for example:
   the progress shows up again, and the top bar shows what is running. **Cancel** stops a job; what
   was already written stays written and is in the History.
 - **Videos** are dated too (e.g. `VID-20190713-WA0001.mp4` from WhatsApp).
+- **Light or dark:** the UI follows your system; the moon/sun button in the top bar switches it (remembered
+  per browser). On narrow screens the menu opens with the ☰ button.
 - **Google Pixel** phones name their files by UTC time (`PXL_20240701_082005123.jpg` for 10:20 in
   Berlin). Such names count as matching the date in Immich.
 - **Password:** set one under *Settings → Password* (or with `UI_PASSWORD`) if others can reach the
@@ -374,6 +376,8 @@ is shown read-only on the Settings page.
   folder loses no data in Immich.
 - **Map tiles.** The Locations page loads its background map from OpenStreetMap in your browser.
   Another tile server can be set in the settings.
+- **Look.** The UI follows Immich's own design (its colours, sidebar and buttons). It bundles the Google Sans
+  font (SIL Open Font License 1.1) and Material Design Icons (Apache License 2.0), so it needs no internet.
 - **MiVOLO license.** MiVOLO's code is Apache-2.0. The model weights are downloaded from
   [Hugging Face](https://huggingface.co/iitolstykh/mivolo_v2) under the license stated there;
   check it before using the tool for anything beyond private use.

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon %}
 {% block title %}{{ album.albumName }}{% endblock %}
 {% block content %}
 <div id="app" data-album="{{ album.id }}" data-immich="{{ immich_url }}" data-list="{{ list_kind }}">
@@ -7,7 +8,7 @@
     {% if is_list %}
     <a class="muted" href="/#library">← Library overview</a>
     {% else %}
-    <a class="muted" href="{{ immich_url }}/albums/{{ album.id }}" target="_blank" rel="noopener">Open in Immich ↗</a>
+    <a class="muted" href="{{ immich_url }}/albums/{{ album.id }}" target="_blank" rel="noopener">Open in Immich {{ icon("open") }}</a>
     {% endif %}
   </div>
   {% if list_kind == "no-date" %}

@@ -50,7 +50,7 @@ function cells(row, period, label) {
 }
 
 function renderLibrary(data) {
-  scanBtn.textContent = data.scanned_at ? "Scan again" : "Scan library";
+  scanBtn.querySelector("span").textContent = data.scanned_at ? "Scan again" : "Scan library";
   if (!data.scanned_at) {
     libScanned.textContent = "";
     libBody.innerHTML = `<p class="muted">See per month which photos lack a location or a date. The scan reads the

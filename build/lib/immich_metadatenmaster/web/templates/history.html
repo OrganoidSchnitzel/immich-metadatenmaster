@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+{% block content %}
+<section id="app" data-immich="{{ immich_url }}">
+  <h1>History</h1>
+  <p class="muted">Everything this tool wrote to Immich, newest first, with the values from before.
+    <strong>Undo</strong> puts the previous dates or locations back and removes the tag. Photos that were
+    changed in Immich in the meantime are left alone.</p>
+  <div id="job" class="job" hidden></div>
+  <div id="result" class="job-result" hidden></div>
+  <table class="history">
+    <thead><tr><th>When</th><th>What</th><th>Photos</th><th></th></tr></thead>
+    <tbody id="batches"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+  </table>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='history.js') }}"></script>{% endblock %}
