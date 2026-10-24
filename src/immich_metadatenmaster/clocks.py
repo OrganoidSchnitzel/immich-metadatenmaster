@@ -32,6 +32,23 @@ VISUAL_SAMPLES = 12
 AGREE_S = 180
 
 
+# Phones set their clocks from the network; cameras keep their own, even when they store a time zone.
+PHONE_MAKES = {
+    "apple", "google", "samsung", "xiaomi", "redmi", "poco", "realme", "oneplus", "oppo", "vivo", "huawei", "honor",
+    "motorola", "nokia", "hmd global", "nothing", "fairphone", "lge", "lg electronics", "zte", "tcl", "meizu",
+    "infinix", "tecno", "asus", "blackview", "ulefone", "cat", "shift",
+}
+
+
+def is_phone(make: str | None, model: str | None) -> bool:
+    make, model = (make or "").strip().lower(), (model or "").strip().lower()
+    if make in PHONE_MAKES or make.startswith(("xiaomi", "huawei", "samsung")):
+        return True
+    if make.startswith("sony") and model.startswith(("xq-", "so-", "sog", "sov", "xperia")):
+        return True
+    return model.startswith(("iphone", "pixel", "sm-", "galaxy"))
+
+
 @dataclass(frozen=True)
 class Shot:
     id: str

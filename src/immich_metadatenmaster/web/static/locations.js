@@ -764,8 +764,10 @@ function renderCameras() {
     const shift = h ? `${h.hours > 0 ? "+" : ""}${h.hours} h` : "";
     return `<tr data-camera="${esc(c.camera)}">
       <td><strong>${esc(c.camera || "Unknown camera")}</strong>
-        <div class="muted">${c.without_location} without a location nearby · ${c.in_scope} in the time span ·
-          ${c.suggested} with a suggestion</div>
+        ${c.without_location ? `<div class="muted">${c.without_location} without a location nearby · ${c.in_scope} in the time span ·
+          ${c.suggested} with a suggestion</div>` : ""}
+        ${c.with_location ? `<div class="muted">${c.with_location} with a location listed · ${c.moved || 0} moved to the track` +
+          Object.entries(c.kept || {}).map(([why, n]) => ` · ${n} kept: ${esc(why)}`).join("") + `</div>` : ""}
         ${h ? `<div class="camera-hint">⚠ ${h.matches} of its photos would fit the tracks with the clock shifted by
           <strong>${shift}</strong> (now ${h.current}). Wrong time zone or summer time?
           <button type="button" class="link" data-shift="${h.hours}">Shift by ${shift} and search again</button></div>` : ""}</td>
@@ -818,15 +820,18 @@ function renderClockCheck(result) {
   clockCheck.hidden = false;
   const note = result.smart_search ? ""
     : `<p class="muted small">Immich's smart search is not available, so only the photo times were compared.</p>`;
+  const devices = (result.devices || []).map(d => `${esc(d.camera)} (${d.phone ? "phone" : "camera"}, ${d.photos})`).join(", ");
+  const found = `<p class="muted small">Found in this time and a day around it: ${devices || "no photos with a camera name"}.
+    Phones set their clocks themselves and are the reference; the cameras are checked against them.</p>`;
   if (!result.cameras.length) {
-    clockCheck.innerHTML = `<p class="muted">No camera photos without a time zone in this time span.</p>`;
+    clockCheck.innerHTML = found + `<p class="muted">No camera photos to check (only phones).</p>`;
     return;
   }
-  clockCheck.innerHTML = note + result.cameras.map(c => {
+  clockCheck.innerHTML = note + found + result.cameras.map(c => {
     const head = `<div><strong>${esc(c.camera)}</strong> <span class="muted">· ${c.photos} photo${c.photos === 1 ? "" : "s"}</span></div>`;
     if (c.offset_s === null) {
       return `<div class="clock-cam">${head}<div class="muted">${result.references
-        ? "No moments shared with phone photos found." : "No photos with a self-setting clock (phone) in this time."}</div></div>`;
+        ? "No moments shared with phone photos found." : "No phone photos in this time to compare with."}</div></div>`;
     }
     const right = Math.abs(c.offset_s) < 60;
     const pairs = c.examples.slice(0, 3).map(e => `

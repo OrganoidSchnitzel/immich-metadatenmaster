@@ -74,9 +74,9 @@ This works without GPX tracks too: untick the tracks and choose an **album** (al
 without a location are listed), or enter a time range. Tick *Also list photos that already have a
 location* to correct a wrong location: move them on the map, or let the GPX tracks do it. A photo
 whose location is more than 100 m off a recorded track at its time gets the track position as a
-suggestion ("replaces …"), e.g. after a whole day was placed at one point. Photos that store a time
-zone (mostly phones, with their own GPS) keep their location, unless it was clearly set by hand: written
-with this tool, or shared exactly by 3 or more photos taken over an hour apart. Planned routes (times
+suggestion ("replaces …"), e.g. after a whole day was placed at one point. Phone photos (their own GPS)
+keep their location, unless it was clearly set by hand: written with this tool, or shared exactly by 3 or
+more photos taken over an hour apart. Planned routes (times
 entered by you) only correct such hand-placed photos. Each photo that keeps its location says why on its
 card, e.g. how far its time is from the nearest track (a hint at a wrong camera clock).
 
@@ -122,7 +122,8 @@ own offset:
   photo of your phone (whose clock sets itself) showing the same moment. The difference of their
   times is the offset.
 - **Check camera clocks automatically** (in the search form, under *Camera clock*) does that for every
-  camera at once, in the search's time span and a day around it, so photos that a wrong clock put
+  camera at once (phones, recognised by their make, are the reference; every other camera is checked, also
+  one that stores a time zone), in the search's time span and a day around it, so photos that a wrong clock put
   outside the span are found too. Two signs are combined:
   - *Shared moments:* you often photograph the same moment with camera and phone. Shifted by the right
     offset, many camera photos line up with a phone photo (within 2 minutes); by any other offset, few do.
