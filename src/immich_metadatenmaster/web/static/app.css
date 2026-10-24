@@ -483,3 +483,14 @@ dialog.sync::backdrop { background: rgba(0, 0, 0, 0.5); }
 .viewer button[data-v=select].primary { background: #adcbfa; color: #0a0a0a; border-color: transparent; }
 .viewer button[data-v=select]:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
 .viewer button[data-v=select].primary:hover:not(:disabled) { background: #c9dcfc; }
+
+/* automatic camera clock check */
+.clock-check { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.clock-cam { padding: 12px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.clock-pairs { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.clock-pair { margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 3px; width: 140px; }
+.clock-pair img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; background: var(--subtle); }
+.clock-pair figcaption { grid-column: 1 / 3; font-size: 0.75rem; color: var(--muted); text-align: center; }
+.conf-high { color: var(--ok); }
+.conf-medium { color: var(--warn); }
+.conf-low, .conf-none { color: var(--err); }

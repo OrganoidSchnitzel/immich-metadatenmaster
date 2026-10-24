@@ -804,6 +804,76 @@ cameraRows.addEventListener("click", (ev) => {
 
 document.getElementById("search-again").addEventListener("click", () => find());
 
+// --- checking camera clocks automatically -----------------------------------------------------
+
+const clockCheck = document.getElementById("clock-check");
+
+/** "2 h 3 min behind" for an offset of +2:03:00. */
+function clockWords(seconds) {
+  const minutes = Math.round(Math.abs(seconds) / 60), h = Math.floor(minutes / 60), m = minutes % 60;
+  return `${h ? `${h} h ${m} min` : `${m} min`} ${seconds > 0 ? "behind" : "ahead"}`;
+}
+
+function renderClockCheck(result) {
+  clockCheck.hidden = false;
+  const note = result.smart_search ? ""
+    : `<p class="muted small">Immich's smart search is not available, so only the photo times were compared.</p>`;
+  if (!result.cameras.length) {
+    clockCheck.innerHTML = `<p class="muted">No camera photos without a time zone in this time span.</p>`;
+    return;
+  }
+  clockCheck.innerHTML = note + result.cameras.map(c => {
+    const head = `<div><strong>${esc(c.camera)}</strong> <span class="muted">· ${c.photos} photo${c.photos === 1 ? "" : "s"}</span></div>`;
+    if (c.offset_s === null) {
+      return `<div class="clock-cam">${head}<div class="muted">${result.references
+        ? "No moments shared with phone photos found." : "No photos with a self-setting clock (phone) in this time."}</div></div>`;
+    }
+    const right = Math.abs(c.offset_s) < 60;
+    const pairs = c.examples.slice(0, 3).map(e => `
+      <figure class="clock-pair" title="${esc(e.photo.file_name)} ↔ ${esc(e.reference.file_name)} (${esc(e.reference.camera)})">
+        <img src="/thumb/${esc(e.photo.id)}" alt="" loading="lazy"><img src="/thumb/${esc(e.reference.id)}" alt="" loading="lazy">
+        <figcaption>${esc((e.photo.local || "").slice(11, 16))} → ${esc((e.reference.local || "").slice(11, 16))}</figcaption>
+      </figure>`).join("");
+    const unchanged = Math.abs(c.offset_s - c.current_s) < 60;
+    return `<div class="clock-cam" data-camera="${esc(c.camera)}">
+      ${head}
+      <div>${right ? "The clock looks right." : `The clock looks <strong>${esc(clockWords(c.offset_s))}</strong>:
+        offset <strong>${esc(formatOffset(c.offset_s))}</strong>`}
+        <span class="conf-${esc(c.confidence)}">· ${esc(c.confidence)} confidence</span></div>
+      <div class="muted small">${c.moments} moment${c.moments === 1 ? "" : "s"} shared with phone photos` +
+      `${c.pairs_checked ? ` · ${c.pairs_agreeing} of ${c.pairs_checked} similar-photo pairs agree` : ""}` +
+      ` · now ${esc(formatOffset(c.current_s))}</div>
+      ${pairs ? `<div class="clock-pairs">${pairs}</div>` : ""}
+      ${unchanged ? `<div class="muted small">Already used.</div>`
+        : `<button type="button" class="primary" data-use-offset="${c.offset_s}">Use ${esc(formatOffset(c.offset_s))} and search</button>`}
+    </div>`;
+  }).join("");
+}
+
+async function checkClocks() {
+  const errEl = document.getElementById("find-error");
+  errEl.hidden = true;
+  try {
+    const job = await api("POST", "/api/geo/clock-check", formRequest());
+    renderClockCheck(await followJob(job, document.getElementById("find-job"), "Checking camera clocks"));
+    clockCheck.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (e) {
+    if (e.cancelled) return;
+    errEl.textContent = e.message;
+    errEl.hidden = false;
+  }
+}
+
+document.getElementById("check-clocks").addEventListener("click", checkClocks);
+
+clockCheck.addEventListener("click", (ev) => {
+  const use = ev.target.closest("[data-use-offset]");
+  if (!use) return;
+  saveOffset(use.closest("[data-camera]").dataset.camera, Number(use.dataset.useOffset));
+  clockCheck.hidden = true;
+  find();
+});
+
 // --- working out a clock offset from two photos of the same moment ----------------------------
 
 const syncDialog = document.getElementById("sync");

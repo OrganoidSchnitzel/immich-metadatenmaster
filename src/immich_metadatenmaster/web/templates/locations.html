@@ -56,6 +56,11 @@
             <label>Clock offset <input name="offset" placeholder="+0:00:00" size="10"></label>
             <small class="muted">Added to the camera's time to get the real time, e.g. <code>+1:00:00</code> if the camera was an hour behind.
               After a search you can set it per camera, or work it out from a camera photo and a phone photo of the same moment.</small>
+            <div class="row">
+              <button type="button" id="check-clocks">{{ icon("clock") }}<span>Check camera clocks automatically</span></button>
+            </div>
+            <small class="muted">Compares each camera's photos with phone photos of the same moments (by time, and by
+              looks with Immich's smart search), in this time span and a day around it. Nothing is written.</small>
           </details>
           <details>
             <summary>Matching</summary>
@@ -75,6 +80,7 @@
         </form>
         <div id="find-job" class="job" hidden></div>
         <div id="find-error" class="notice error" hidden></div>
+        <div id="clock-check" class="clock-check" hidden></div>
       </section>
     </div>
 

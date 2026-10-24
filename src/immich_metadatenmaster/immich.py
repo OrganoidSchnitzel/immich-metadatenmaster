@@ -229,6 +229,14 @@ class ImmichClient:
         except (ImmichError, KeyError, TypeError, ValueError):
             return None
 
+    def similar_assets(self, asset_id: str, *, taken_after: datetime, taken_before: datetime,
+                       size: int = 8) -> list[Asset]:
+        """The photos that look most like this one, best first (Immich's smart search, which needs its
+        machine learning)."""
+        body = {"queryAssetId": asset_id, "takenAfter": iso_utc(taken_after), "takenBefore": iso_utc(taken_before),
+                "size": size, "withExif": True}
+        return [Asset.from_api(item) for item in self._json("POST", "/search/smart", json=body)["assets"]["items"]]
+
     def album_all_assets(self, album_id: str) -> list[Asset]:
         """Photos and videos of an album."""
         return list(self.search_assets(albumIds=[album_id], withPeople=False))

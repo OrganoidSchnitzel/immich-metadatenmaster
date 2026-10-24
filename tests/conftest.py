@@ -86,6 +86,9 @@ class FakeImmich:
         # Simulate Immich failing after this many location updates.
         self.fail_location_after: int | None = None
         self.search_calls: list[dict[str, Any]] = []
+        # Smart search: photos with the same scene look alike; off like Immich without machine learning.
+        self.scenes: dict[str, str] = {}
+        self.smart_search = True
 
     # --- setup helpers ---------------------------------------------------------------------
 
@@ -192,6 +195,17 @@ class FakeImmich:
             album = self.albums.get(m[1])
             return httpx.Response(200, json={**album, "assetCount": len(album["assets"])}) if album \
                 else httpx.Response(404, json={"message": "not found"})
+        if path == "/search/smart":
+            if not self.smart_search:
+                return httpx.Response(400, json={"message": "Smart search is not enabled"})
+            ref = body["queryAssetId"]
+            lo, hi = (datetime.fromisoformat(body[k].replace("Z", "+00:00")) for k in ("takenAfter", "takenBefore"))
+            found = [a for a in self.assets.values() if a.id != ref
+                     and lo <= datetime.fromisoformat(a.file_created_at.replace("Z", "+00:00")) <= hi]
+            scene = self.scenes.get(ref)
+            found.sort(key=lambda a: (scene is None or self.scenes.get(a.id) != scene, a.file_name))
+            return httpx.Response(200, json={"albums": {}, "assets": {
+                "items": [self.asset_json(a) for a in found[:body.get("size", 100)]], "nextPage": None}})
         if path in {"/search/metadata", "/search/statistics"}:
             if "albumIds" in body:
                 ids = [i for alb in body["albumIds"] for i in self.albums[alb]["assets"]]
