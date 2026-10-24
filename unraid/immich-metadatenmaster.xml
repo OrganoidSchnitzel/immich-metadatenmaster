@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>immich-metadatenmaster</Name>
+  <Repository>ghcr.io/organoidschnitzel/immich-metadatenmaster:latest</Repository>
+  <Registry>https://github.com/OrganoidSchnitzel/immich-metadatenmaster/pkgs/container/immich-metadatenmaster</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/OrganoidSchnitzel/immich-metadatenmaster/issues</Support>
+  <Project>https://github.com/OrganoidSchnitzel/immich-metadatenmaster</Project>
+  <Overview>Suggests missing metadata for photos in Immich and writes it only after you confirm: dates (one you know, estimated from the ages of the people in the photo, or read from the file name) and locations (from GPX tracks such as Komoot, from nearby phone photos, or from other versions of the same photo). After starting, open the WebUI and enter your Immich URL and API key on the setup page.</Overview>
+  <Category>MediaApp:Photos Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/immich-app/immich/main/design/immich-logo.svg</Icon>
+  <Config Name="WebUI port" Target="8080" Default="8080" Mode="tcp" Description="Port of the web interface. Keep it on your LAN: the UI has no login." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/immich-metadatenmaster" Mode="rw" Description="Settings, GPX tracks, the tool's records and the downloaded age model (about 100 MB). To take over an Immich Age Guesser installation, point this to its appdata folder." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/immich-metadatenmaster</Config>
+  <Config Name="Time zone" Target="TZ" Default="Europe/Berlin" Mode="" Description="Time zone for the dates written to Immich and default camera time zone (can also be changed on the settings page)." Type="Variable" Display="always" Required="false" Mask="false">Europe/Berlin</Config>
+</Container>

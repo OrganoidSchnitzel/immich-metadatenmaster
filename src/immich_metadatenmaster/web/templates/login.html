@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Log in{% endblock %}
+{% block content %}
+<section class="narrow login">
+  <h1>Log in</h1>
+  <form id="login-form" class="settings" data-next="{{ next }}">
+    <fieldset>
+      <label>Password <input type="password" name="password" autocomplete="current-password" autofocus required></label>
+      <div class="row">
+        <button type="submit" class="primary">Log in</button>
+        <span id="login-status" class="hint" role="status"></span>
+      </div>
+    </fieldset>
+  </form>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='login.js') }}"></script>{% endblock %}

@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<section class="narrow">
+  <h1>Settings</h1>
+  {% if not configured %}
+  <div class="notice">
+    <strong>Welcome!</strong> Connect the tool to your Immich server to get started.
+    Create an API key in Immich under <em>Account Settings → API Keys</em> with these permissions:
+    <code>album.read</code>, <code>albumAsset.delete</code>, <code>asset.read</code>, <code>asset.view</code>,
+    <code>asset.download</code>, <code>asset.update</code>, <code>face.read</code>, <code>person.read</code>,
+    <code>person.update</code>, <code>tag.create</code>, <code>tag.asset</code>, optionally
+    <code>asset.statistics</code> (or simply give it all permissions).
+  </div>
+  {% endif %}
+
+  <form id="settings" class="settings" autocomplete="off">
+    <fieldset>
+      <legend>Immich</legend>
+      <label>Immich URL
+        <input name="immich_url" placeholder="http://192.168.1.10:2283 or http://immich-server:2283" required>
+        <small>As seen from this tool. In the same Docker Compose project as Immich: <code>http://immich-server:2283</code>.</small>
+      </label>
+      <label>API key
+        <input name="immich_api_key" type="password" placeholder="paste the key here">
+        <small id="key-hint"></small>
+      </label>
+      <label><span>Public Immich URL <span class="muted">(optional)</span></span>
+        <input name="immich_public_url" placeholder="https://photos.example.com">
+        <small>Used for the "Open in Immich" links if your browser reaches Immich under a different address.</small>
+      </label>
+      <div class="row">
+        <button type="button" id="test">Test connection</button>
+      </div>
+      <ul id="checks" class="checks"></ul>
+    </fieldset>
+
+    <fieldset>
+      <legend>Writing to Immich</legend>
+      <label>Time zone
+        <input name="timezone" list="timezones" placeholder="Europe/Berlin">
+        <datalist id="timezones"></datalist>
+        <small>Used for the dates written to Immich, and as the default camera time zone on the Locations page.</small>
+      </label>
+      <label>A year or month is written as its
+        <select name="date_anchor">
+          <option value="middle">middle (1987 → 2 July 1987)</option>
+          <option value="start">start (1987 → 1 January 1987)</option>
+        </select>
+      </label>
+      <label>Tag for changed photos
+        <input name="tag_root" placeholder="Metadatenmaster">
+        <small>Photos get e.g. "&lt;tag&gt;/Date/Manual", "&lt;tag&gt;/Date/Estimated" or "&lt;tag&gt;/Location/GPX". Leave empty for no tags.</small>
+      </label>
+      <label class="check"><input name="write_description" type="checkbox"> Add an explanation line to the description of estimated photos</label>
+      <label class="check"><input name="remove_from_album" type="checkbox"> Remove photos from their album once dated (default for the album page)</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Age model</legend>
+      <label>Model
+        <select name="estimator">
+          <option value="mivolo">MiVOLO (recommended, runs on the CPU)</option>
+          <option value="ollama">Vision LLM via Ollama</option>
+        </select>
+      </label>
+      <div data-show="ollama">
+        <label>Ollama URL <input name="ollama_url" placeholder="http://ollama:11434"></label>
+        <label>Ollama model <input name="ollama_model" placeholder="qwen2.5vl:7b"></label>
+      </div>
+      <details>
+        <summary>Advanced</summary>
+        <label>Device <input name="device" placeholder="cpu"><small><code>cpu</code>, or <code>cuda</code> for a GPU (also AMD with ROCm).</small></label>
+        <label>MiVOLO model <input name="mivolo_model"></label>
+        <label>Minimum face size in the preview (px) <input name="min_face_px" type="number" min="1"></label>
+        <label class="check"><input name="use_original_for_small_faces" type="checkbox"> Crop small faces from the full-resolution scan</label>
+      </details>
+    </fieldset>
+
+    <fieldset>
+      <legend>Map</legend>
+      <label>Map tiles
+        <input name="map_tile_url" placeholder="https://tile.openstreetmap.org/{z}/{x}/{y}.png">
+        <small>Any XYZ tile server. The browser loads the tiles directly.</small>
+      </label>
+      <label>Attribution
+        <input name="map_attribution">
+      </label>
+      <label>Address search
+        <input name="geocoder_url" placeholder="https://photon.komoot.io">
+        <small>A <a href="https://github.com/komoot/photon" target="_blank" rel="noopener">Photon</a> geocoder,
+          asked by this server when you search for a place on the map. Leave empty to switch the search off
+          (typed coordinates still work).</small>
+      </label>
+      <label class="check"><input name="place_names" type="checkbox"> Show place names next to location suggestions</label>
+      <small class="muted">Asks the address search above which place a suggested position (rounded to about 100 m)
+        belongs to, and remembers the answer.</small>
+    </fieldset>
+
+    <div class="row">
+      <button type="submit" class="primary">Save</button>
+      <span id="save-status" class="muted"></span>
+    </div>
+    <p id="locked-note" class="muted" hidden>Greyed-out fields are set by environment variables and can only be changed there.</p>
+    <p class="muted">Stored in <code id="data-dir"></code>.</p>
+  </form>
+
+  <form id="password-form" class="settings" autocomplete="off">
+    <fieldset>
+      <legend>Password</legend>
+      <p id="pw-state" class="muted"></p>
+      <div id="pw-fields">
+        <label id="pw-current" hidden>Current password
+          <input type="password" name="current" autocomplete="current-password"></label>
+        <label>New password <input type="password" name="new" autocomplete="new-password"></label>
+        <label>Repeat the new password <input type="password" name="repeat" autocomplete="new-password"></label>
+        <div class="row">
+          <button type="submit" id="pw-save">Set password</button>
+          <button type="button" id="pw-remove" class="danger" hidden>Remove password</button>
+          <span id="pw-status" class="muted" role="status"></span>
+        </div>
+      </div>
+    </fieldset>
+  </form>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='settings.js') }}"></script>{% endblock %}
