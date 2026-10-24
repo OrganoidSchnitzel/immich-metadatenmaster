@@ -72,7 +72,10 @@ map…** and click the spot.
 
 This works without GPX tracks too: untick the tracks and choose an **album** (all its photos
 without a location are listed), or enter a time range. Tick *Also list photos that already have a
-location* to correct a wrong location.
+location* to correct a wrong location: move them on the map, or let the GPX tracks do it. A photo
+whose location is more than 100 m off a recorded track at its time gets the track position as a
+suggestion ("replaces …"), e.g. after a whole day was placed at one point. Photos that store a time
+zone (mostly phones, with their own GPS) and planned routes without times are left out of this.
 
 The search uses [Photon](https://github.com/komoot/photon), the OpenStreetMap geocoder of Komoot
 (`https://photon.komoot.io`). This server sends it the search text and the map centre (to prefer

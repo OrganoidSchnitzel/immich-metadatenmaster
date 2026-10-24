@@ -204,6 +204,30 @@ def test_place_on_map_and_discard(fake, geo, tour):
     assert fake.assets[a].tags == {"Metadatenmaster/Location/Map"} and fake.assets[b].latitude is None
 
 
+
+def test_located_photos_far_off_the_track_get_its_position(fake, geo, guesser, tour):
+    # Earlier the whole day was put at one point on the map; the track knows better.
+    wrong = fake.add_photo("IMG_1.CR2", "2024-07-01T10:30:00", lat=47.5, lon=11.5)
+    close = fake.add_photo("IMG_2.CR2", "2024-07-01T10:30:00", lat=47.0305, lon=11.0)  # about 55 m off: fine
+    later = fake.add_photo("IMG_3.CR2", "2024-07-01T15:00:00", lat=47.5, lon=11.5)  # not on the track
+    phone = fake.add_photo("PXL_1.jpg", "2024-07-01T10:30:00", tz="Europe/Berlin", lat=47.5, lon=11.5,
+                           make="Google", model="Pixel 8")  # a phone's own GPS is trusted
+    run = geo.find(berlin(start=datetime(2024, 7, 1, 6, tzinfo=UTC), end=datetime(2024, 7, 1, 18, tzinfo=UTC)))
+    assert run["relocated"] == 0 and geo.suggestions() == {}  # only on request
+
+    run = geo.find(berlin(start=datetime(2024, 7, 1, 6, tzinfo=UTC), end=datetime(2024, 7, 1, 18, tzinfo=UTC),
+                          include_located=True))
+    s = geo.suggestions()
+    assert run["relocated"] == 1 and run["located_listed"] == 4
+    assert (s[wrong]["status"], s[wrong]["source"], s[wrong]["current_lat"]) == ("ok", "gpx", 47.5)
+    assert s[wrong]["lat"] == pytest.approx(47.03)
+    assert s[close]["status"] == s[later]["status"] == s[phone]["status"] == "located"
+
+    assert geo.apply(list(s))["written"] == 1
+    assert (fake.assets[wrong].latitude, fake.assets[wrong].longitude) == (pytest.approx(47.03), 11.0)
+    guesser.history.undo(geo.store.change_batches()[0]["id"])
+    assert (fake.assets[wrong].latitude, fake.assets[wrong].longitude) == (47.5, 11.5)
+
 def test_album_filter(fake, geo, tour):
     inside = fake.add_photo("IMG_1.CR2", "2024-07-01T10:30:00", album="trip")
     fake.add_photo("IMG_2.CR2", "2024-07-01T10:40:00")
