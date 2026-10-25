@@ -14,6 +14,7 @@ values and can be undone.
 | 📍 **Location from nearby photos** | A phone photo with GPS taken a few minutes before or after (e.g. your camera has no GPS, your phone does). |
 | 📍 **Location from the same photo** | Another version of the same shot that has a location: `IMG_1234.CR2` → `IMG_1234-HDR.dng`, `IMG_1234_edited.jpg`. |
 | 📍 **Location on the map** | Search a place or address (or paste coordinates) and place the selected photos there, or click on the map. |
+| 🛠 **Check & fix** | Finds wrong camera clocks, locations that don't fit your tracks or phone photos, and photos shown in home time instead of local time, and suggests fixes. |
 
 Everything runs locally. Photos never leave your server. It combines two earlier tools: Immich Age
 Guesser (dates from faces) and a geotagging notebook (GPX → RAW files).
@@ -85,14 +86,8 @@ result, and click **Place … selected photos here** in its bubble. Or click **P
 map…** and click the spot.
 
 This works without GPX tracks too: untick the tracks and choose an **album** (all its photos
-without a location are listed), or enter a time range. Tick *Also list photos that already have a
-location* to correct a wrong location: move them on the map, or let the GPX tracks do it. A photo
-whose location is more than 100 m off a recorded track at its time gets the track position as a
-suggestion ("replaces …"), e.g. after a whole day was placed at one point. Phone photos (their own GPS)
-keep their location, unless it was clearly set by hand: written with this tool, or shared exactly by 3 or
-more photos taken over an hour apart. Planned routes (times
-entered by you) only correct such hand-placed photos. Each photo that keeps its location says why on its
-card, e.g. how far its time is from the nearest track (a hint at a wrong camera clock).
+without a location are listed), or enter a time range. To correct a location that is already in
+Immich, use [Check & fix](#check--fix).
 
 The search uses [Photon](https://github.com/komoot/photon), the OpenStreetMap geocoder of Komoot
 (`https://photon.komoot.io`). This server sends it the search text and the map centre (to prefer
@@ -110,43 +105,52 @@ remembered by this tool; nothing is written to Immich.
 
 ### Camera clocks and time zones
 
-GPX times are UTC; most system cameras store only their clock time without a time zone. The tool
-therefore needs to know:
+GPX times are UTC; most system cameras store only their clock time without a time zone, and their
+clocks are often off (still on winter time, on the home time zone, or simply wrong). The search
+handles this by itself:
 
-- **Camera time zone**: the zone the camera's clock was set to (default: the time zone from the
-  settings). Photos that store a time zone (phones, some newer cameras) use their own, unless you
-  untick *Trust the time zone stored in a photo*.
-- **Clock offset**: if the camera's clock was simply wrong, e.g. `+1:00:00` when it was still on
-  winter time, or `-0:03:20` when it ran 3 min 20 s fast. When writing, you can *also correct the
-  photo times* by the offset (this part can be undone in History).
-- **Local time of the place**: Immich shows a camera photo without a time zone at its clock time and
-  files it as if that were UTC. A camera still on German time in Colorado shows 21:45 for a photo
-  taken at 13:45 there, and lands hours away from your phone photos in the timeline. Tick *Also set
-  the local time of the place* when writing: the time zone is looked up from the location (offline)
-  and the capture time is written in it, e.g. `13:45 America/Denver`, including any clock offset.
-  The cards show *Local time there* beforehand. Photos that store their own time zone are left
-  alone; this part can be undone in History too (CLI: `--local-time`).
-
-After a search, **Camera clocks** lists every camera with photos without a location, each with its
-own offset:
-
-- If a camera's photos would fit the tracks much better with its clock shifted by whole hours (a
-  wrong time zone or summer time), it says so: **Shift by −2 h and search again**.
-- **Sync with another camera…** works out an offset for you: pick a photo of that camera, then the
-  photo of your phone (whose clock sets itself) showing the same moment. The difference of their
-  times is the offset.
-- **Check camera clocks automatically** (in the search form, under *Camera clock*) does that for every
-  camera at once (phones, recognised by their make, are the reference; every other camera is checked, also
-  one that stores a time zone), in the search's time span and a day around it, so photos that a wrong clock put
-  outside the span are found too. Two signs are combined:
+- **Clocks are checked automatically.** For every camera (phones, recognised by their make, set their
+  clocks themselves and are the reference), the tool compares its photos with your phone's photos of
+  the same moments, in the search's time span and a day around it. Two signs are combined:
   - *Shared moments:* you often photograph the same moment with camera and phone. Shifted by the right
     offset, many camera photos line up with a phone photo (within 2 minutes); by any other offset, few do.
   - *Similar photos:* for a dozen camera photos, Immich's smart search finds the most similar phone
     photos; each pair votes for an offset. This needs Immich's machine learning (on by default); without
     it, only the times are compared.
 
-  Each camera gets a suggested offset with how sure it is and a few example pairs; **Use … and search**
-  takes it and searches again. Nothing is written to Immich.
+  An offset found with high or medium confidence is used for the search. **Camera clocks** (in step 3)
+  shows for each camera what was found, how sure it is and why.
+- **Times are corrected when writing** for cameras whose offset was found with *high* confidence (or that
+  you set yourself): *Correct times* is ticked for them, and the note under the write button says so.
+  Photos without a time zone get the corrected time in the **local time of the place** (looked up from
+  the location, offline), e.g. `13:45 America/Denver` for a camera still on German time in Colorado.
+  Untick it per camera to write only the locations. Both parts can be undone in History.
+- **Your own value wins:** type an offset for a camera (e.g. `+1:00:00` if it was an hour behind) and
+  search again; *use automatic* goes back. **Photo pair…** works one out for you: pick a photo of that
+  camera, then the phone photo showing the same moment. If a camera's photos would fit the tracks much
+  better with its clock shifted by whole hours, the table says so (**Shift by −2 h and search again**).
+- Under *Advanced*: the **home time zone of your cameras** (default: the time zone in the settings),
+  whether to trust the time zone stored in a photo, and the matching tolerances.
+
+## Check & fix
+
+Finds mistakes in the dates and locations **already in Immich** – your own, or written earlier with
+this tool and a wrong camera clock – and suggests a fix for each. Choose what to check (the days of
+your GPX tracks and/or a time range) and click **Check**. The results are grouped by trip and camera:
+
+| Finding | Fix |
+|---|---|
+| **Camera clock wrong**: found from the same moments photographed with your phone (and similar-looking photos), with example pairs | Correct the capture times (photos without a time zone: in the local time of the place) |
+| **Location doesn't fit the GPX track** at the photo's corrected time (more than 100 m off) | Move it onto the track |
+| **Location placed by hand, far from your phone's photos** of the same minutes (e.g. a whole day put on one spot of the map) | Move it to where the phone was |
+| **Home time instead of local time**: a camera without a time zone, shown in German time in Colorado | Set the local time of the place (the order of the photos stays) |
+| **No location, but fits a GPX track** once the camera's clock is corrected | Add the location |
+
+Each finding explains itself, says how sure it is, and shows the photos with what changes (e.g.
+`12:20 → 10:20`, *moves 3.3 km*). Untick photos to leave them out, click the button to fix the rest,
+or **Leave as is**. Your phone's own GPS positions are never moved, and cameras whose clock cannot be
+checked (no phone photos of the same moments) get no time fixes. Every fix is logged in **History**
+and can be undone there.
 
 ## Dates
 

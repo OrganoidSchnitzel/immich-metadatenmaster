@@ -42,6 +42,7 @@
       {% if configured %}
       <a class="nav-item{% if nav.startswith('/dates') or nav.startswith('/album') %} active{% endif %}" href="/dates">{{ icon("dates") }}<span>Dates</span></a>
       <a class="nav-item{% if nav.startswith('/locations') %} active{% endif %}" href="/locations">{{ icon("locations") }}<span>Locations</span></a>
+      <a class="nav-item{% if nav.startswith('/check') %} active{% endif %}" href="/check">{{ icon("auto-fix") }}<span>Check &amp; fix</span></a>
       <a class="nav-item{% if nav.startswith('/people') %} active{% endif %}" href="/people">{{ icon("people") }}<span>People &amp; birthdays</span></a>
       <a class="nav-item{% if nav.startswith('/history') %} active{% endif %}" href="/history">{{ icon("history") }}<span>History</span></a>
       {% endif %}

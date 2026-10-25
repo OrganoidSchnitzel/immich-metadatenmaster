@@ -107,3 +107,37 @@ def test_is_phone():
     from immich_metadatenmaster.clocks import is_phone
     assert is_phone("realme", "GT 2") and is_phone("Apple", "iPhone 15") and is_phone("Sony", "XQ-DQ54")
     assert not is_phone("Canon", "Canon EOS 77D") and not is_phone("SONY", "ILCE-7M4") and not is_phone(None, None)
+
+
+def test_the_search_finds_the_clock_by_itself(fake, geo, trip):
+    """No offset entered: the Canon's 2 h are found and used, its photos get the phone's positions."""
+    for p in trip["phone"]:
+        fake.assets[p].latitude, fake.assets[p].longitude = 47.5, 11.1
+    run = geo.find(day())
+    canon = next(c for c in run["cameras"] if c["camera"] == "Canon EOS 77D")
+    assert canon["clock"] == "detected" and canon["check"]["confidence"] == "high"
+    assert abs(canon["offset_s"] - 7252) <= 30
+    s = geo.suggestions()
+    assert all(s[c]["status"] == "ok" and s[c]["source"] == "nearby" and s[c]["lat"] == pytest.approx(47.5)
+               for c in trip["canon"])
+
+    # An offset entered for the camera wins.
+    run = geo.find(day(camera_offsets={"Canon EOS 77D": 60}))
+    canon = next(c for c in run["cameras"] if c["camera"] == "Canon EOS 77D")
+    assert (canon["clock"], canon["offset_s"]) == ("set", 60)
+    geo.find(day())
+
+    # Writing corrects the Canon's times (asked for per camera), in the local time of the place.
+    first = trip["canon"][0]
+    geo.apply(trip["canon"], fix_cameras=["Canon EOS 77D"])
+    assert fake.assets[first].exif_date.startswith("2024-07-01T10:00:") and fake.assets[first].time_zone == \
+        "Europe/Berlin"
+    assert [b["source"] for b in geo.store.change_batches()][:2] == ["clock", "nearby"]
+
+
+def test_no_clock_check_without_phone_photos(fake, geo):
+    fake.add_photo("IMG_1.CR2", "2024-07-01T10:00:00", model="Canon EOS 77D")
+    run = geo.find(day())
+    canon = run["cameras"][0]
+    assert canon["clock"] == "unknown" and canon["offset_s"] == 0 and canon["check"]["confidence"] == "none"
+    assert next(c for c in geo.find(day(auto_clocks=False))["cameras"])["clock"] == "not checked"
