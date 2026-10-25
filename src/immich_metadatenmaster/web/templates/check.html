@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Check & fix{% endblock %}
+{% block content %}
+<div id="app" data-tz="{{ timezone }}" data-immich="{{ immich_url }}">
+  <div class="section-head">
+    <h1>Check &amp; fix</h1>
+    <span class="muted">Finds mistakes in the dates and locations already in Immich, and suggests a fix for each.</span>
+  </div>
+
+  <section class="panel check-form">
+    <form id="check-form" autocomplete="off">
+      <h2>What to check</h2>
+      <label class="check"><input type="checkbox" name="use_tracks" checked>
+        <span>The days of my GPX tracks <span id="track-count" class="muted"></span></span></label>
+      <fieldset>
+        <legend>and/or this time range <span class="muted">(optional)</span></legend>
+        <div class="row">
+          <label>From <input type="datetime-local" name="start" step="1"></label>
+          <label>to <input type="datetime-local" name="end" step="1"></label>
+        </div>
+      </fieldset>
+      <details>
+        <summary>Advanced</summary>
+        <label>Home time zone of your cameras
+          <input name="camera_tz" list="timezones" placeholder="{{ timezone }}">
+          <datalist id="timezones"></datalist>
+          <small class="muted">The zone your cameras' clocks are normally set to. Only matters for cameras that store
+            no time zone in their photos (most system cameras). Default: the time zone in the Settings.</small>
+        </label>
+      </details>
+      <div class="row">
+        <button type="submit" class="primary">{{ icon("auto-fix") }}<span>Check</span></button>
+        <span class="muted">Nothing is changed until you click <em>Fix</em>.</span>
+      </div>
+    </form>
+    <div id="check-job" class="job" hidden></div>
+    <div id="check-error" class="notice error" hidden></div>
+    <details class="check-help">
+      <summary>What is checked?</summary>
+      <ul>
+        <li><strong>Camera clocks.</strong> Each camera's photos are compared with your phone's photos of the same
+          moments (by time, and by looks with Immich's smart search). Phones set their clocks themselves. A camera
+          that was off gets its times corrected.</li>
+        <li><strong>Locations that don't fit the GPX track</strong> at the photo's (corrected) time, e.g. written
+          earlier with a wrong camera clock. Your phone's own GPS positions are left alone.</li>
+        <li><strong>Locations placed by hand that are far from your phone's photos</strong> of the same minutes, e.g.
+          a whole day put on one spot on the map.</li>
+        <li><strong>Home time instead of local time:</strong> photos from a camera that stores no time zone are shown
+          in its home time (e.g. German time in Colorado). Setting the local time of the place fixes that.</li>
+        <li><strong>Photos without a location that fit a GPX track</strong> once their camera's clock is corrected.</li>
+      </ul>
+      <p class="muted">Every fix is logged in the History and can be undone there.</p>
+    </details>
+  </section>
+
+  <div id="results"></div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='check.js') }}"></script>{% endblock %}

@@ -9,7 +9,7 @@ import logging
 import re
 import uuid
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -106,9 +106,17 @@ class GeoOptions:
     use_siblings: bool = True
     # Also list photos that already have a location (to correct a wrong one on the map).
     include_located: bool = False
+    # Work out the clock offset of cameras not in camera_offsets from photos of the same moments.
+    auto_clocks: bool = True
+    # Filled in by the search: offsets found that way (camera -> seconds).
+    detected_offsets: dict[str, int] = field(default_factory=dict)
 
     def offset_for(self, camera: str) -> int:
-        return self.camera_offsets.get(camera, self.offset_s) if camera else self.offset_s
+        if not camera:
+            return self.offset_s
+        if camera in self.camera_offsets:
+            return self.camera_offsets[camera]
+        return self.detected_offsets.get(camera, self.offset_s)
 
     def to_dict(self) -> dict[str, Any]:
         return {**{k: v for k, v in self.__dict__.items() if k not in {"start", "end"}},
@@ -174,6 +182,19 @@ def _merge(windows: list[tuple[datetime, datetime]]) -> list[tuple[datetime, dat
         else:
             out.append((start, end))
     return out
+
+
+# A detected clock offset smaller than this is measuring noise, not a wrong clock.
+MIN_OFFSET_S = clocks.MATCH_S
+# Detected offsets with this confidence are used for the search.
+USABLE_CONFIDENCE = {"high", "medium"}
+
+
+def usable_offset(found: dict[str, Any]) -> int | None:
+    """The offset of a clock check result, if it is sure enough and big enough to matter (0 for a right clock)."""
+    if found.get("confidence") not in USABLE_CONFIDENCE or found.get("offset_s") is None:
+        return None
+    return found["offset_s"] if abs(found["offset_s"]) >= MIN_OFFSET_S else 0
 
 
 class GeoTagger:
@@ -288,6 +309,18 @@ class GeoTagger:
         # Live Photo videos are hidden in Immich and follow their photo; locked photos stay private.
         assets = {aid: a for aid, a in assets.items() if a.shown}
 
+        clock_results: dict[str, dict[str, Any]] = {}
+        if opts.auto_clocks:
+            cameras = {a.camera for a in assets.values() if a.camera and not a.has_location
+                       and not clocks.is_phone(a.camera_make, a.camera_model) and a.camera not in opts.camera_offsets}
+            if cameras:
+                found = self.estimate_clocks(scopes if not whole_album else self._span_of(assets.values()), cam_tz,
+                                             opts.use_photo_tz, cameras=cameras,
+                                             only_ids=set(assets) if opts.album_id else None)
+                clock_results = {c["camera"]: c for c in found["cameras"]}
+                opts = replace(opts, detected_offsets={
+                    name: off for name, c in clock_results.items() if (off := usable_offset(c)) is not None})
+
         def in_scope(t: datetime) -> bool:
             return whole_album or any(a <= t <= b for a, b in scopes)
 
@@ -377,6 +410,15 @@ class GeoTagger:
         self.store.save_suggestions(TABLE, results, replace_all=True)
         cameras = self._camera_stats(unlocated, candidates, results, opts)
         self._located_stats(cameras, results, opts)
+        phones = {a.camera for a in assets.values() if a.camera and clocks.is_phone(a.camera_make, a.camera_model)}
+        for c in cameras:
+            found = clock_results.get(c["camera"])
+            c["clock"] = "set" if c["camera"] in opts.camera_offsets else "detected" \
+                if c["camera"] in opts.detected_offsets else "unknown" if found else "phone" \
+                if c["camera"] in phones else "not checked"
+            if found:
+                c["check"] = {k: found[k] for k in ("offset_s", "confidence", "moments", "pairs_found",
+                                                    "pairs_agreeing", "examples")}
         run = {
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "options": opts.to_dict(),
@@ -459,23 +501,39 @@ class GeoTagger:
         cam_tz = ZoneInfo(opts.camera_tz)
         tracks = self._load_tracks(opts.track_ids) if opts.use_tracks else []
         scopes, whole_album = self._scopes(opts, tracks, timedelta(minutes=opts.tolerance_min))
-        span = timedelta(seconds=clocks.SPAN_S) + _TZ_SLACK
         album_ids: set[str] | None = None
         if opts.album_id:
             album = self.immich.album_all_assets(opts.album_id)
             album_ids = {a.id for a in album}
             if whole_album:
-                instants = [a.taken_at for a in album if a.taken_at]
-                if not instants:
+                if not any(a.taken_at for a in album):
                     raise ValueError("No photos with a date in this album.")
-                scopes = [(min(instants), max(instants))]
-        assets: dict[str, Asset] = {}
+                scopes = self._span_of(album)
+        result = self.estimate_clocks(scopes, cam_tz, opts.use_photo_tz, only_ids=album_ids, progress=progress)
+        for c in result["cameras"]:
+            c["current_s"] = opts.offset_for(c["camera"])
+        return result
+
+    @staticmethod
+    def _span_of(assets: Any) -> list[tuple[datetime, datetime]]:
+        instants = [a.taken_at for a in assets if a.taken_at]
+        return [(min(instants), max(instants))] if instants else []
+
+    def estimate_clocks(self, scopes: list[tuple[datetime, datetime]], cam_tz: ZoneInfo, use_photo_tz: bool, *,
+                        cameras: set[str] | None = None, only_ids: set[str] | None = None,
+                        assets: dict[str, Asset] | None = None, progress: Progress = _noop) -> dict[str, Any]:
+        """The clock offsets of the cameras (all, or the given ones) whose photos lie in these time spans, from
+        photos of the same moments by phones in the spans and a day around them. `only_ids` limits the cameras'
+        photos (e.g. to an album); `assets` are the photos already read (else they are read here)."""
+        span = timedelta(seconds=clocks.SPAN_S) + _TZ_SLACK
         windows = _merge([(a - span, b + span) for a, b in scopes])
-        for i, (a, b) in enumerate(windows):
-            assets.update((x.id, x) for x in self.immich.assets_taken_between(a, b))  # all cameras
-            if len(assets) > MAX_ASSETS:
-                raise ValueError(f"More than {MAX_ASSETS} photos in this time span. Use a shorter range.")
-            progress(i + 1, len(windows) + 1)
+        if assets is None:
+            assets = {}
+            for i, (a, b) in enumerate(windows):
+                assets.update((x.id, x) for x in self.immich.assets_taken_between(a, b))  # all cameras
+                if len(assets) > MAX_ASSETS:
+                    raise ValueError(f"More than {MAX_ASSETS} photos in this time span. Use a shorter range.")
+                progress(i + 1, len(windows) + 1)
 
         refs: list[clocks.Shot] = []
         cams: dict[str, list[clocks.Shot]] = {}
@@ -491,9 +549,10 @@ class GeoTagger:
                 t = photo_instant(a, cam_tz, True)
                 if t is not None:
                     refs.append(clocks.Shot(a.id, a.file_name, a.camera, t.timestamp(), local))
-            elif a.type == "IMAGE" and (album_ids is None or a.id in album_ids):
+            elif a.type == "IMAGE" and (only_ids is None or a.id in only_ids) \
+                    and (cameras is None or a.camera in cameras):
                 # Read like the search does, so that the offset found is the one the search needs.
-                t = photo_instant(a, cam_tz, opts.use_photo_tz)
+                t = photo_instant(a, cam_tz, use_photo_tz)
                 if t is not None:
                     cams.setdefault(a.camera, []).append(clocks.Shot(a.id, a.file_name, a.camera, t.timestamp(), local))
 
@@ -515,7 +574,7 @@ class GeoTagger:
         for i, name in enumerate(names):
             # Never the camera itself: its own photos share its wrong clock.
             found = clocks.estimate(cams[name], [r for r in refs if r.camera != name], similar)
-            results.append({"camera": name, "photos": len(cams[name]), "current_s": opts.offset_for(name), **found})
+            results.append({"camera": name, "photos": len(cams[name]), **found})
             progress(len(windows) + i + 1, len(windows) + len(names))
         return {"cameras": results, "references": len(refs), "smart_search": smart["available"],
                 "smart_search_error": smart["error"],
@@ -740,9 +799,11 @@ class GeoTagger:
         return self.store.no_location()
 
     def apply(self, asset_ids: list[str], *, fix_time: bool = False, local_time: bool = False,
-              progress: Progress = _noop) -> dict[str, Any]:
-        """Write the accepted locations to Immich. If asked, also the clock-corrected times, or, for photos
-        without a time zone, the time at the place in its time zone (which includes the clock correction)."""
+              fix_cameras: list[str] | None = None, progress: Progress = _noop) -> dict[str, Any]:
+        """Write the accepted locations to Immich. If asked (for all photos, or those of `fix_cameras`), also the
+        clock-corrected times: for photos without a time zone as the time at the place, in its time zone.
+        `local_time` sets that time also for photos whose clock was right."""
+        fix = set(fix_cameras or [])
         stored = self.store.suggestions(TABLE, asset_ids)
         # (0, 0) is never suggested, and Immich would take it for "no location".
         todo = [aid for aid in asset_ids if (stored.get(aid) or {}).get("status") == "ok"
@@ -768,10 +829,13 @@ class GeoTagger:
                     stamp = local_stamp(s["instant"], zone)
                     self.immich.set_date([aid], stamp, zone)
                     local_times.append((aid, name, before, {"date": stamp, "time_zone": zone}))
-                elif fix_time and s.get("corrected"):
-                    tz = s.get("corrected_tz")
-                    self.immich.set_date([aid], s["corrected"], tz)
-                    times.append((aid, name, before, {"date": s["corrected"], "time_zone": tz}))
+                elif (fix_time or s.get("camera") in fix) and s.get("corrected"):
+                    stamp, tz = s["corrected"], s.get("corrected_tz")
+                    if lacks_zone(s.get("time_zone")) and s.get("instant") \
+                            and (place := place_zone(s["lat"], s["lon"])):
+                        stamp, tz = local_stamp(s["instant"], place), place
+                    self.immich.set_date([aid], stamp, tz)
+                    times.append((aid, name, before, {"date": stamp, "time_zone": tz}))
                 progress(i + 1, len(todo))
         finally:
             # Also after an error part-way: log, tag and clear what was written, so nothing is written twice.

@@ -561,8 +561,8 @@ document.getElementById("tracks").addEventListener("click", async (ev) => {
 
 // --- finding -------------------------------------------------------------------------------
 
-const PREF_FIELDS = ["camera_tz", "offset", "tolerance_min", "max_gap_min", "nearby_min", "use_photo_tz",
-  "use_nearby", "use_siblings", "use_tracks", "include_located"];
+const PREF_FIELDS = ["camera_tz", "tolerance_min", "max_gap_min", "nearby_min", "use_photo_tz", "use_nearby",
+  "use_siblings", "use_tracks", "auto_clocks"];
 
 function restoreForm() {
   const prefs = loadPrefs();
@@ -576,8 +576,6 @@ function restoreForm() {
 
 function formRequest() {
   const f = form.elements;
-  const offset = parseOffset(f.offset.value);
-  if (Number.isNaN(offset)) throw new Error("Write the clock offset like +1:00:00, -0:30 or 90 (minutes).");
   savePrefs(Object.fromEntries(PREF_FIELDS.map(n => [n, f[n].type === "checkbox" ? f[n].checked : f[n].value])));
   const cameraOffsets = Object.fromEntries(Object.entries(savedOffsets()).filter(([k, v]) => k && Number.isFinite(v)));
   return {
@@ -589,13 +587,12 @@ function formRequest() {
     album_id: f.album_id.value || null,
     camera_tz: cameraTz(),
     use_photo_tz: f.use_photo_tz.checked,
-    offset_s: offset,
+    auto_clocks: f.auto_clocks.checked,
     tolerance_min: Number(f.tolerance_min.value || 0),
     max_gap_min: Number(f.max_gap_min.value || 0),
     use_nearby: f.use_nearby.checked,
     nearby_min: Number(f.nearby_min.value || 0),
     use_siblings: f.use_siblings.checked,
-    include_located: f.include_located.checked,
   };
 }
 
@@ -672,7 +669,6 @@ function render() {
   review.hidden = !run;
   if (!run) { grid.innerHTML = ""; return; }
 
-  const opts = run.options || {};
   const src = Object.entries(run.sources || {}).map(([k, v]) => `${v} from ${SOURCE_LABEL[k] || k}`).join(", ");
   document.getElementById("run-summary").innerHTML =
     `Search of ${esc(new Date(run.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }))}: ${run.searched} photos looked at, ${run.with_location} already had a location, ` +
@@ -680,12 +676,10 @@ function render() {
     (run.no_location_needed ? ` ${run.no_location_needed} skipped as “no location needed”.` : "") +
     (run.relocated ? ` <strong>${run.relocated} photo${run.relocated === 1 ? "" : "s"} that already had a location ` +
       `${run.relocated === 1 ? "is" : "are"} more than 100 m off the track</strong> and get${run.relocated === 1 ? "s" : ""} its position.` : "") +
-    offsetsSummary(opts) +
+    offsetsSummary() +
     (pendingCount() < run.candidates ? ` ${run.candidates - pendingCount()} already written, discarded or marked.` : "");
 
   renderCameras();
-  document.getElementById("fix-time-opt").hidden = !items.some(it => it.corrected);
-  document.getElementById("local-time-opt").hidden = !items.some(it => it.place_tz);
 
   const cams = [...new Set(items.map(it => it.camera).filter(Boolean))].sort();
   const current = cameraFilter.value;
@@ -846,18 +840,53 @@ cameraFilter.addEventListener("change", render);
 
 // --- camera clocks -------------------------------------------------------------------------
 
-function savedOffsets() { return loadPrefs().cameraOffsets || {}; }
+/** Clock offsets entered by the user (camera -> seconds); the others are found automatically. */
+function savedOffsets() { return loadPrefs().clockOverrides || {}; }
 
 function saveOffset(camera, seconds) {
   const all = savedOffsets();
   if (seconds === null) delete all[camera]; else all[camera] = seconds;
-  savePrefs({ cameraOffsets: all });
+  savePrefs({ clockOverrides: all });
 }
 
-function offsetsSummary(opts) {
-  const parts = Object.entries(opts.camera_offsets || {}).filter(([, v]) => v).map(([k, v]) => `${k} ${formatOffset(v)}`);
-  if (opts.offset_s) parts.push(`${parts.length ? "other cameras" : "all cameras"} ${formatOffset(opts.offset_s)}`);
-  return parts.length ? ` Clock offsets: ${esc(parts.join(", "))}.` : "";
+/** Cameras whose photo times are corrected when writing (camera -> on/off, else the default). */
+const fixTimes = new Map();
+
+function fixesTimes(c) {
+  if (!c.camera || !c.offset_s) return false;
+  if (fixTimes.has(c.camera)) return fixTimes.get(c.camera);
+  // Corrected automatically when the tool is sure, or the user set the offset.
+  return c.clock === "set" || (c.clock === "detected" && c.check && c.check.confidence === "high");
+}
+
+/** "2 h 03 min behind" for an offset of +2:03:00. */
+function clockWords(seconds) {
+  const minutes = Math.floor(Math.abs(seconds) / 60), h = Math.floor(minutes / 60), m = minutes % 60;
+  if (!minutes) return "right";
+  return `${h ? `${h} h ${String(m).padStart(2, "0")} min` : `${m} min`} ${seconds > 0 ? "behind" : "ahead"}`;
+}
+
+function clockStatus(c) {
+  const k = c.check;
+  if (c.clock === "set") return `<strong>${esc(clockWords(c.offset_s))}</strong> <span class="muted">· set by you</span>
+    <button type="button" class="link" data-auto>use automatic</button>`;
+  if (c.clock === "detected") {
+    return `<strong>${esc(clockWords(c.offset_s))}</strong> <span class="conf-${esc(k.confidence)}">· found, ${esc(k.confidence)} confidence</span>
+      <div class="muted small">${k.moments} moment${k.moments === 1 ? "" : "s"} shared with phone photos` +
+      `${k.pairs_agreeing ? ` · ${k.pairs_agreeing} similar-looking photo pairs agree` : ""}</div>`;
+  }
+  if (c.clock === "unknown") {
+    return `<span class="muted">Can't tell: ${k && k.moments ? "too few moments shared with phone photos" : "no phone photos of the same moments"}.
+      Assumed right; enter an offset or work it out from a photo pair.</span>`;
+  }
+  if (c.clock === "phone") return `<span class="muted">Phone: sets its clock itself.</span>`;
+  return `<span class="muted">Not checked</span>`;
+}
+
+function offsetsSummary() {
+  const off = ((run && run.cameras) || []).filter(c => c.camera && c.offset_s);
+  if (!off.length) return "";
+  return ` Camera clocks: ${esc(off.map(c => `${c.camera} ${clockWords(c.offset_s)}`).join(", "))} (see below).`;
 }
 
 function renderCameras() {
@@ -866,42 +895,64 @@ function renderCameras() {
   box.hidden = !cams.length;
   if (!cams.length) return;
   const hints = Object.fromEntries((run.hints || []).map(h => [h.camera, h]));
-  const saved = savedOffsets();
+  const off = cams.filter(c => c.offset_s).length;
   const nHints = Object.keys(hints).length;
-  document.getElementById("cameras-note").textContent =
-    nHints ? `· ${nHints} camera${nHints === 1 ? "" : "s"} may have a wrong clock` : `· ${cams.length} camera${cams.length === 1 ? "" : "s"}`;
-  if (nHints) box.open = true;
+  document.getElementById("cameras-note").textContent = [
+    `· ${cams.length} camera${cams.length === 1 ? "" : "s"}`,
+    off ? `${off} with a wrong clock` : "", nHints ? `${nHints} may be on another time zone` : "",
+  ].filter(Boolean).join(", ");
+  if (off || nHints) box.open = true;
+  const saved = savedOffsets();
   document.getElementById("camera-rows").innerHTML = cams.map(c => {
     const named = Boolean(c.camera);
-    const value = named && saved[c.camera] !== undefined ? saved[c.camera] : c.offset_s;
     const h = hints[c.camera];
     const shift = h ? `${h.hours > 0 ? "+" : ""}${h.hours} h` : "";
     return `<tr data-camera="${esc(c.camera)}">
       <td><strong>${esc(c.camera || "Unknown camera")}</strong>
-        ${c.without_location ? `<div class="muted">${c.without_location} without a location nearby · ${c.in_scope} in the time span ·
-          ${c.suggested} with a suggestion</div>` : ""}
-        ${c.with_location ? `<div class="muted">${c.with_location} with a location listed · ${c.moved || 0} moved to the track` +
-          Object.entries(c.kept || {}).map(([why, n]) => ` · ${n} kept: ${esc(why)}`).join("") + `</div>` : ""}
+        <div class="muted small">${c.without_location} without a location nearby · ${c.in_scope} in the time span ·
+          ${c.suggested} with a suggestion</div>
+        <div class="clock-status">${named ? clockStatus(c) : ""}</div>
         ${h ? `<div class="camera-hint">⚠ ${h.matches} of its photos would fit the tracks with the clock shifted by
           <strong>${shift}</strong> (now ${h.current}). Wrong time zone or summer time?
           <button type="button" class="link" data-shift="${h.hours}">Shift by ${shift} and search again</button></div>` : ""}</td>
-      <td>${named ? `<input class="cam-offset" value="${esc(formatOffset(value))}" size="9" aria-label="Clock offset">`
-        : `<span class="muted" title="Photos without a camera name use the clock offset in the form">${esc(formatOffset(value))}</span>`}</td>
-      <td>${named && c.photos.length ? `<button type="button" data-sync>Sync with another camera…</button>` : ""}</td>
+      <td>${named ? `<input class="cam-offset" value="${esc(saved[c.camera] !== undefined ? formatOffset(saved[c.camera]) : "")}"
+          placeholder="${esc(formatOffset(c.offset_s))}" size="9" aria-label="Clock offset" title="Leave empty for the automatic value">` : ""}</td>
+      <td>${named && c.offset_s ? `<label class="check"><input type="checkbox" data-fix-times ${fixesTimes(c) ? "checked" : ""}> Correct times</label>` : ""}
+        ${named && c.photos.length ? `<button type="button" data-sync>Photo pair…</button>` : ""}</td>
     </tr>`;
   }).join("");
+  updateFixNote();
+}
+
+/** Below the write button: whose times are corrected as well. */
+function updateFixNote() {
+  const note = document.getElementById("fix-note");
+  const cams = ((run && run.cameras) || []).filter(fixesTimes);
+  note.hidden = !cams.length;
+  note.innerHTML = cams.length ? `Writing also corrects the times of ${esc(cams.map(c => `${c.camera} (${clockWords(c.offset_s)})`).join(", "))},
+    in the local time of the place for photos without a time zone. Change this under <em>Camera clocks</em>.` : "";
 }
 
 const cameraRows = document.getElementById("camera-rows");
 
 cameraRows.addEventListener("change", (ev) => {
+  const row = ev.target.closest("tr");
+  if (!row) return;
+  const camera = row.dataset.camera;
+  if (ev.target.closest("[data-fix-times]")) {
+    fixTimes.set(camera, ev.target.checked);
+    updateFixNote();
+    return;
+  }
   const input = ev.target.closest(".cam-offset");
   if (!input) return;
-  const camera = input.closest("tr").dataset.camera;
   const text = input.value.trim();
   const seconds = text ? parseOffset(text) : null;
   input.classList.toggle("invalid", Number.isNaN(seconds));
-  if (!Number.isNaN(seconds)) saveOffset(camera, seconds);
+  if (!Number.isNaN(seconds)) {
+    saveOffset(camera, seconds);
+    document.getElementById("search-again").classList.add("pulse");
+  }
 });
 
 cameraRows.addEventListener("click", (ev) => {
@@ -909,9 +960,12 @@ cameraRows.addEventListener("click", (ev) => {
   if (!row) return;
   const camera = row.dataset.camera;
   if (ev.target.closest("[data-shift]")) {
-    const input = row.querySelector(".cam-offset");
-    const current = parseOffset(input.value) || 0;
-    saveOffset(camera, current + Number(ev.target.closest("[data-shift]").dataset.shift) * 3600);
+    const c = run.cameras.find(x => x.camera === camera);
+    saveOffset(camera, (c ? c.offset_s : 0) + Number(ev.target.closest("[data-shift]").dataset.shift) * 3600);
+    find();
+  } else if (ev.target.closest("[data-auto]")) {
+    saveOffset(camera, null);
+    fixTimes.delete(camera);
     find();
   } else if (ev.target.closest("[data-sync]")) {
     openSync(camera);
@@ -919,79 +973,6 @@ cameraRows.addEventListener("click", (ev) => {
 });
 
 document.getElementById("search-again").addEventListener("click", () => find());
-
-// --- checking camera clocks automatically -----------------------------------------------------
-
-const clockCheck = document.getElementById("clock-check");
-
-/** "2 h 3 min behind" for an offset of +2:03:00. */
-function clockWords(seconds) {
-  const minutes = Math.round(Math.abs(seconds) / 60), h = Math.floor(minutes / 60), m = minutes % 60;
-  return `${h ? `${h} h ${m} min` : `${m} min`} ${seconds > 0 ? "behind" : "ahead"}`;
-}
-
-function renderClockCheck(result) {
-  clockCheck.hidden = false;
-  const note = result.smart_search ? ""
-    : `<p class="muted small">Immich's smart search is not available, so only the photo times were compared.</p>`;
-  const devices = (result.devices || []).map(d => `${esc(d.camera)} (${d.phone ? "phone" : "camera"}, ${d.photos})`).join(", ");
-  const found = `<p class="muted small">Found in this time and a day around it: ${devices || "no photos with a camera name"}.
-    Phones set their clocks themselves and are the reference; the cameras are checked against them.</p>`;
-  if (!result.cameras.length) {
-    clockCheck.innerHTML = found + `<p class="muted">No camera photos to check (only phones).</p>`;
-    return;
-  }
-  clockCheck.innerHTML = note + found + result.cameras.map(c => {
-    const head = `<div><strong>${esc(c.camera)}</strong> <span class="muted">· ${c.photos} photo${c.photos === 1 ? "" : "s"}</span></div>`;
-    if (c.offset_s === null) {
-      return `<div class="clock-cam">${head}<div class="muted">${result.references
-        ? "No moments shared with phone photos found." : "No phone photos in this time to compare with."}</div></div>`;
-    }
-    const right = Math.abs(c.offset_s) < 60;
-    const pairs = c.examples.slice(0, 3).map(e => `
-      <figure class="clock-pair" title="${esc(e.photo.file_name)} ↔ ${esc(e.reference.file_name)} (${esc(e.reference.camera)})">
-        <img src="/thumb/${esc(e.photo.id)}" alt="" loading="lazy"><img src="/thumb/${esc(e.reference.id)}" alt="" loading="lazy">
-        <figcaption>${esc((e.photo.local || "").slice(11, 16))} → ${esc((e.reference.local || "").slice(11, 16))}</figcaption>
-      </figure>`).join("");
-    const unchanged = Math.abs(c.offset_s - c.current_s) < 60;
-    return `<div class="clock-cam" data-camera="${esc(c.camera)}">
-      ${head}
-      <div>${right ? "The clock looks right." : `The clock looks <strong>${esc(clockWords(c.offset_s))}</strong>:
-        offset <strong>${esc(formatOffset(c.offset_s))}</strong>`}
-        <span class="conf-${esc(c.confidence)}">· ${esc(c.confidence)} confidence</span></div>
-      <div class="muted small">${c.moments} moment${c.moments === 1 ? "" : "s"} shared with phone photos` +
-      `${c.pairs_checked ? ` · ${c.pairs_agreeing} of ${c.pairs_checked} similar-photo pairs agree` : ""}` +
-      ` · now ${esc(formatOffset(c.current_s))}</div>
-      ${pairs ? `<div class="clock-pairs">${pairs}</div>` : ""}
-      ${unchanged ? `<div class="muted small">Already used.</div>`
-        : `<button type="button" class="primary" data-use-offset="${c.offset_s}">Use ${esc(formatOffset(c.offset_s))} and search</button>`}
-    </div>`;
-  }).join("");
-}
-
-async function checkClocks() {
-  const errEl = document.getElementById("find-error");
-  errEl.hidden = true;
-  try {
-    const job = await api("POST", "/api/geo/clock-check", formRequest());
-    renderClockCheck(await followJob(job, document.getElementById("find-job"), "Checking camera clocks"));
-    clockCheck.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  } catch (e) {
-    if (e.cancelled) return;
-    errEl.textContent = e.message;
-    errEl.hidden = false;
-  }
-}
-
-document.getElementById("check-clocks").addEventListener("click", checkClocks);
-
-clockCheck.addEventListener("click", (ev) => {
-  const use = ev.target.closest("[data-use-offset]");
-  if (!use) return;
-  saveOffset(use.closest("[data-camera]").dataset.camera, Number(use.dataset.useOffset));
-  clockCheck.hidden = true;
-  find();
-});
 
 // --- working out a clock offset from two photos of the same moment ----------------------------
 
@@ -1085,6 +1066,7 @@ syncBody.addEventListener("click", (ev) => {
   const use = ev.target.closest("[data-use]");
   if (use) {
     saveOffset(syncCamera.name, Number(use.dataset.use));
+    fixTimes.delete(syncCamera.name);
     syncDialog.close();
     renderCameras();
     const btn = document.getElementById("search-again");
@@ -1173,19 +1155,17 @@ applyBtn.addEventListener("click", async () => {
   const chosen = visibleSelectedIds().map(id => items.find(it => it.id === id)).filter(it => it.status === "ok");
   const ids = chosen.map(it => it.id);
   const replacing = chosen.filter(it => it.current_lat !== undefined && it.current_lat !== null).length;
-  const fixTime = !document.getElementById("fix-time-opt").hidden && document.getElementById("fix-time").checked;
-  const localTime = !document.getElementById("local-time-opt").hidden && document.getElementById("local-time").checked;
-  const zoneless = chosen.filter(it => it.place_tz).length;
+  const fixCameras = ((run && run.cameras) || []).filter(fixesTimes).map(c => c.camera);
+  const timed = chosen.filter(it => it.corrected && fixCameras.includes(it.camera)).length;
   const msg = `Write the location of ${ids.length} photo${ids.length === 1 ? "" : "s"} to Immich?` +
     (replacing ? ` ${replacing} of them already have a location, which is replaced.` : "") +
-    (fixTime ? "\n\nTheir capture times are corrected by their camera's clock offset as well." : "") +
-    (localTime && zoneless ? `\n\n${zoneless} of them store no time zone: their capture time is written as the local time of the place.` : "") +
+    (timed ? `\n\nThe capture time of ${timed} of them is corrected by their camera's clock offset as well.` : "") +
     "\n\nYou can undo this in History.";
   if (!confirm(msg)) return;
   const resultEl = document.getElementById("apply-result");
   resultEl.hidden = true;
   try {
-    const job = await api("POST", "/api/geo/apply", { asset_ids: ids, fix_time: fixTime, local_time: localTime });
+    const job = await api("POST", "/api/geo/apply", { asset_ids: ids, fix_cameras: fixCameras });
     const r = await followJob(job, document.getElementById("apply-job"), "Writing locations");
     resultEl.textContent = `Wrote ${r.written} location${r.written === 1 ? "" : "s"}` +
       (r.times_fixed ? `, corrected ${r.times_fixed} time${r.times_fixed === 1 ? "" : "s"}` : "") +

@@ -454,6 +454,9 @@ tr.details > td { background: var(--bg); }
 .camera-table td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
 .camera-table input { width: 8em; padding: 5px 8px !important; }
 .camera-table input.invalid { border-color: var(--err) !important; }
+.camera-table input[type=checkbox] { width: 16px; padding: 0 !important; }
+.camera-table td:last-child { white-space: nowrap; }
+.clock-status { margin-top: 4px; font-size: 0.9rem; }
 .camera-hint { color: var(--warn); margin-top: 4px; }
 .pulse { animation: pulse 1s ease-in-out 3; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--primary) 35%, transparent); } }
@@ -514,3 +517,36 @@ dialog.sync::backdrop { background: rgba(0, 0, 0, 0.5); }
 .conf-high { color: var(--ok); }
 .conf-medium { color: var(--warn); }
 .conf-low, .conf-none { color: var(--err); }
+
+/* --- check & fix ------------------------------------------------------------------------------- */
+
+.check-form { margin-bottom: 20px; }
+.check-form form { display: flex; flex-direction: column; gap: 12px; }
+.check-help { margin-top: 14px; font-size: 0.9rem; }
+.check-help ul { margin: 8px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.check-summary { margin: 0 0 12px; }
+.trip { margin: 24px 0 8px; }
+.trip h2 .muted { font-weight: 400; font-size: 0.9rem; }
+.trip-cams { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.trip-cams .chip .i { width: 16px; height: 16px; }
+.chip.clock-ok { background: var(--manual); }
+.chip.clock-off { background: var(--warn-bg); }
+.finding { margin-bottom: 16px; }
+.finding-head { display: flex; gap: 14px; align-items: flex-start; }
+.finding-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: var(--primary-50); color: var(--primary); flex: none; }
+.finding-icon .i { width: 22px; height: 22px; }
+.finding-text h3 { margin: 0 0 4px; font-size: 1rem; font-weight: 600; color: var(--strong); }
+.finding-text p { margin: 0 0 4px; font-size: 0.9rem; }
+.finding-actions { margin: 10px 0 12px; }
+.grid.compact { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.grid.compact .card .body { padding: 8px 10px 10px; }
+.change { font-size: 0.85rem; }
+.ok-line { display: flex; gap: 8px; align-items: center; color: var(--ok); }
+.ok-line .i { width: 20px; height: 20px; }
+
+@media (max-width: 640px) {
+  .camera-table tr { display: flex; flex-wrap: wrap; gap: 6px 10px; border-top: 1px solid var(--border); padding: 8px 0; }
+  .camera-table td { display: block; border-top: 0; padding: 0; }
+  .camera-table td:first-child { flex: 1 1 100%; }
+  .camera-table td:last-child { white-space: normal; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+}

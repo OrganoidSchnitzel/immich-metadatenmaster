@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS geo_suggestion (
     data TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS correction (
+    asset_id TEXT PRIMARY KEY,     -- "<finding id>|<asset id>": a suggested fix from Check & fix
+    data TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS track (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -445,7 +450,7 @@ class Store:
         return out
 
 
-_SUGGESTION_TABLES = {"name_date", "geo_suggestion", "version_date"}
+_SUGGESTION_TABLES = {"name_date", "geo_suggestion", "version_date", "correction"}
 
 
 def _check_table(table: str) -> None:

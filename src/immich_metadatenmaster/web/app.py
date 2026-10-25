@@ -28,6 +28,7 @@ from .. import users
 from ..auth import COOKIE, MIN_LENGTH, SESSION_S, Auth, LoginThrottle, hash_password, password_state, \
     verify_password
 from ..config import ENV_NAMES, ENV_ONLY, Settings, env_overrides
+from ..corrections import CheckOptions, Corrections
 from ..dates import parse_date_spec, parse_year_bound
 from ..geocode import GeocodeError, reverse as reverse_geocode, search as geocode_search
 from ..geotag import GeoOptions, GeoTagger, lacks_zone, place_zone
@@ -121,6 +122,7 @@ class GeoRequest(BaseModel):
     use_siblings: bool = True
     include_located: bool = False
     camera_offsets: dict[str, int] = Field(default_factory=dict)
+    auto_clocks: bool = True
 
 
 class PlaceRequest(BaseModel):
@@ -169,10 +171,30 @@ _TOUR_ID = re.compile(r"^\d{1,20}$")
 KOMOOT_KEY = "komoot"
 
 
+class CheckRequest(BaseModel):
+    track_ids: list[str] | None = None
+    use_tracks: bool = True
+    start: str | None = None  # local times in camera_tz
+    end: str | None = None
+    camera_tz: str | None = None
+
+
+class FixRequest(BaseModel):
+    finding_id: str = Field(max_length=300)
+    asset_ids: list[str] = Field(min_length=1)
+
+
+class DismissRequest(BaseModel):
+    finding_id: str = Field(max_length=300)
+    asset_ids: list[str] | None = None
+
+
 class GeoApplyRequest(BaseModel):
     asset_ids: list[str] = Field(min_length=1)
     fix_time: bool = False
     local_time: bool = False
+    # Correct the times of these cameras' photos by their clock offset.
+    fix_cameras: list[str] = Field(default_factory=list)
 
 
 def _zone(name: str) -> ZoneInfo:
@@ -223,11 +245,13 @@ class Workspace:
     geo: GeoTagger
     versions: VersionDates
     library: LibraryScan
+    corrections: Corrections
 
     @classmethod
     def of(cls, owner: str, g: AgeGuesser) -> "Workspace":
-        return cls(owner, g, GeoTagger(g.settings, g.immich, g.store), VersionDates(g.settings, g.immich, g.store),
-                   LibraryScan(g.immich, g.store))
+        geo = GeoTagger(g.settings, g.immich, g.store)
+        return cls(owner, g, geo, VersionDates(g.settings, g.immich, g.store), LibraryScan(g.immich, g.store),
+                   Corrections(g.settings, g.immich, g.store, geo))
 
 
 def _use(client: ImmichClient, kind: str, secret: str) -> ImmichClient:
@@ -518,6 +542,11 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         return page(request, "locations.html", albums=albums, error=error, timezone=s.timezone,
                     tile_url=s.map_tile_url, attribution=s.map_attribution, immich_url=s.public_url,
                     geocoder=bool(s.geocoder_url), place_names=bool(s.geocoder_url and s.place_names))
+
+    @app.get("/check", response_class=HTMLResponse, dependencies=[Depends(setup_redirect)])
+    def check_page(request: Request) -> Response:
+        s = g().settings
+        return page(request, "check.html", timezone=s.timezone, immich_url=s.public_url)
 
     @app.get("/history", response_class=HTMLResponse, dependencies=[Depends(setup_redirect)])
     def history_page(request: Request) -> Response:
@@ -1040,7 +1069,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
                 end=_local(body.end, tz), album_id=body.album_id or None, camera_tz=tz_name,
                 use_photo_tz=body.use_photo_tz, offset_s=body.offset_s, tolerance_min=body.tolerance_min,
                 max_gap_min=body.max_gap_min, use_nearby=body.use_nearby, nearby_min=body.nearby_min,
-                use_siblings=body.use_siblings, include_located=body.include_located,
+                use_siblings=body.use_siblings, include_located=body.include_located, auto_clocks=body.auto_clocks,
                 camera_offsets={k: v for k, v in body.camera_offsets.items() if abs(v) <= 30 * 86400})
         except ValueError as exc:
             raise bad_request(exc) from exc
@@ -1151,8 +1180,41 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     def geo_apply(body: GeoApplyRequest) -> dict[str, Any]:
         tagger = geo()
         return submit("geo-apply", lambda progress: tagger.apply(
-            body.asset_ids, fix_time=body.fix_time, local_time=body.local_time, progress=progress),
+            body.asset_ids, fix_time=body.fix_time, local_time=body.local_time, fix_cameras=body.fix_cameras,
+            progress=progress),
             label="Writing locations", meta={"page": "locations"}).to_dict()
+
+    # --- check & fix ----------------------------------------------------------------------------
+
+    @app.post("/api/check")
+    def check(body: CheckRequest) -> dict[str, Any]:
+        ws = workspace()
+        try:
+            tz_name = body.camera_tz or runtime.settings.timezone
+            tz = _zone(tz_name)
+            opts = CheckOptions(track_ids=body.track_ids, use_tracks=body.use_tracks, start=_local(body.start, tz),
+                                end=_local(body.end, tz), camera_tz=tz_name)
+        except ValueError as exc:
+            raise bad_request(exc) from exc
+        if bool(opts.start) != bool(opts.end):
+            raise bad_request(ValueError("Enter both ends of the time range, or neither."))
+        return submit("check", lambda progress: ws.corrections.scan(opts, progress=progress),
+                      label="Checking dates and locations", meta={"page": "check"}).to_dict()
+
+    @app.get("/api/check")
+    def check_results() -> dict[str, Any]:
+        return workspace().corrections.results() or {"created_at": None}
+
+    @app.post("/api/check/fix")
+    def check_fix(body: FixRequest) -> dict[str, Any]:
+        ws = workspace()
+        return submit("check-fix", lambda progress: ws.corrections.apply(body.finding_id, body.asset_ids,
+                                                                          progress=progress),
+                      label="Fixing", meta={"page": "check"}).to_dict()
+
+    @app.post("/api/check/dismiss")
+    def check_dismiss(body: DismissRequest) -> dict[str, Any]:
+        return {"dismissed": workspace().corrections.dismiss(body.finding_id, body.asset_ids)}
 
     # --- history ----------------------------------------------------------------------------
 

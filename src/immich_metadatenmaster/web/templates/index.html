@@ -28,6 +28,11 @@
       and same-name files (HDR, edits) help too.</p>
     <span class="muted">{{ tracks }} track{{ "" if tracks == 1 else "s" }} uploaded{% if geo_pending %} · {{ geo_pending }} suggestion{{ "" if geo_pending == 1 else "s" }} waiting for review{% endif %}</span>
   </a>
+  <a class="tile" href="/check">
+    <h2><span class="tile-icon">{{ icon("auto-fix") }}</span>Check &amp; fix</h2>
+    <p>Finds mistakes in dates and locations already in Immich – a camera clock that was off, locations that
+      don't fit your GPX tracks or phone photos, home time instead of local time – and suggests a fix for each.</p>
+  </a>
   <a class="tile" href="/people">
     <h2><span class="tile-icon">{{ icon("people") }}</span>People &amp; birthdays</h2>
     <p>Birthdays of the people named in Immich. Needed to date photos from faces.</p>
