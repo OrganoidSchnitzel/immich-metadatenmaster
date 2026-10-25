@@ -36,7 +36,8 @@ numbers right away; changes made in Immich show after the next scan.
 ## Locations from GPX tracks
 
 1. Open **Locations** and drop your GPX files onto the page. From Komoot: open a *completed* tour
-   → ⋯ → *Download GPX*. Strava, Garmin Connect, OsmAnd and most other apps export GPX too.
+   → ⋯ → *Download GPX*, or import them directly (see below). Strava, Garmin Connect, OsmAnd and
+   most other apps export GPX too.
    - A **planned** route has no times. The tool asks when you walked it and assumes a constant
      pace; those suggestions are marked *low confidence*.
 2. Tick the tracks to use and click **Find suggestions**. The tool searches Immich for photos and
@@ -62,6 +63,19 @@ numbers right away; changes made in Immich show after the next scan.
 Each suggestion shows the name of the place (“📍 Höllentalangerhütte, Grainau”), so you can check
 it without zooming in. Immich fills in its own place names (city, country) after writing. Immich has
 no API to set the altitude, so the GPX elevation is only shown, not written.
+
+### Tours straight from Komoot
+
+Under **Import from Komoot** on the Locations page, log in with your Komoot email and password once.
+Your recorded tours are listed (newest first); tick the ones you want and click **Import**. They
+become tracks like uploaded GPX files, with the time of every point; imported tours are marked and
+not imported twice.
+
+> Komoot has no public interface for this. The tool uses the one Komoot's own apps use (as the
+> open-source tools *komootgpx* and *kompy* do), so it can stop working whenever Komoot changes it,
+> and Komoot's terms of use may not allow it. Use it at your own risk; downloading GPX files by
+> hand always works. Your password goes to Komoot once; the tool keeps only the token Komoot hands
+> out (with several users: per person), until you click **Disconnect**.
 
 ### Placing photos by address
 

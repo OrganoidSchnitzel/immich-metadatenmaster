@@ -34,6 +34,7 @@ from ..geotag import GeoOptions, GeoTagger, lacks_zone, place_zone
 from ..gpx import MAX_GPX_BYTES, GpxError
 from ..immich import Asset, ImmichClient, ImmichError
 from ..jobs import Job, JobManager
+from ..komoot import Komoot, KomootError, KomootLoginFailed, file_name as komoot_file, tour_of
 from ..overview import LibraryScan, is_list, list_title
 from ..service import AgeGuesser, SharedModels, build_guesser, report_dict
 from ..users import LoginFailed, Sessions, User
@@ -153,6 +154,19 @@ class LoginRequest(BaseModel):
 class PasswordChange(BaseModel):
     current: str = Field(default="", max_length=1000)
     new: str = Field(default="", max_length=1000)  # empty: remove the password
+
+
+class KomootLogin(BaseModel):
+    email: str = Field(max_length=320)
+    password: str = Field(max_length=1000)
+
+
+class KomootImport(BaseModel):
+    tour_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+_TOUR_ID = re.compile(r"^\d{1,20}$")
+KOMOOT_KEY = "komoot"
 
 
 class GeoApplyRequest(BaseModel):
@@ -333,7 +347,7 @@ def _client(settings: Settings) -> ImmichClient:
 def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None = None,
                build: Callable[..., AgeGuesser] = build_guesser,
                make_client: Callable[[Settings], ImmichClient] = _client,
-               geocode_transport: Any = None) -> FastAPI:
+               geocode_transport: Any = None, komoot_transport: Any = None) -> FastAPI:
     if settings is None:
         settings = guesser.settings if guesser is not None else Settings.load()
     runtime = Runtime(settings, build, make_client, guesser)
@@ -925,6 +939,97 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     def delete_track(track_id: str) -> dict[str, Any]:
         geo().delete_track(track_id)
         return {"deleted": track_id}
+
+    # --- Komoot -------------------------------------------------------------------------------
+
+    def komoot_account(ws: Workspace) -> dict[str, str]:
+        account = ws.guesser.store.get_value(KOMOOT_KEY)
+        if not account:
+            raise bad_request(ValueError("Connect Komoot first."))
+        return account
+
+    def komoot_tracks(ws: Workspace) -> dict[str, str]:
+        """Tours already imported: tour id → track id."""
+        return {tour: t["id"] for t in ws.guesser.store.tracks(with_points=False)
+                if (tour := tour_of(t["file_name"])) is not None}
+
+    @app.get("/api/komoot")
+    def komoot_status() -> dict[str, Any]:
+        account = workspace().guesser.store.get_value(KOMOOT_KEY)
+        return {"connected": bool(account), "name": account["name"] if account else None}
+
+    @app.post("/api/komoot/connect")
+    async def komoot_connect(body: KomootLogin) -> dict[str, Any]:
+        """Log in to Komoot once; only the token it hands out is kept (in this person's data)."""
+        ws = workspace()
+        client = Komoot(transport=komoot_transport)
+        try:
+            account = await run_in_threadpool(client.log_in, body.email.strip(), body.password)
+        except KomootLoginFailed as exc:
+            await asyncio.sleep(FAILED_LOGIN_DELAY_S)
+            raise bad_request(exc) from None
+        except KomootError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from None
+        finally:
+            client.close()
+        ws.guesser.store.set_value(KOMOOT_KEY, account)
+        return {"connected": True, "name": account["name"]}
+
+    @app.post("/api/komoot/disconnect")
+    def komoot_disconnect() -> dict[str, Any]:
+        workspace().guesser.store.set_value(KOMOOT_KEY, None)
+        return {"connected": False, "name": None}
+
+    @app.get("/api/komoot/tours")
+    def komoot_tours(page: int = 0) -> dict[str, Any]:
+        ws = workspace()
+        account = komoot_account(ws)
+        client = Komoot(account["user_id"], account["token"], transport=komoot_transport)
+        try:
+            data = client.tours(max(page, 0))
+        except KomootLoginFailed:
+            ws.guesser.store.set_value(KOMOOT_KEY, None)
+            raise bad_request(ValueError("Komoot no longer accepts the login. Connect again.")) from None
+        except KomootError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from None
+        finally:
+            client.close()
+        imported = komoot_tracks(ws)
+        for tour in data["tours"]:
+            tour["track_id"] = imported.get(tour["id"])
+        return data
+
+    @app.post("/api/komoot/import")
+    def komoot_import(body: KomootImport) -> dict[str, Any]:
+        ws = workspace()
+        account = komoot_account(ws)
+        tour_ids = list(dict.fromkeys(body.tour_ids))
+        if not all(_TOUR_ID.match(t) for t in tour_ids):
+            raise bad_request(ValueError("Unknown tour."))
+
+        def run(progress: Callable[[int, int], None]) -> dict[str, Any]:
+            imported = komoot_tracks(ws)
+            done: list[str] = []
+            errors: list[str] = []
+            client = Komoot(account["user_id"], account["token"], transport=komoot_transport)
+            try:
+                for i, tour_id in enumerate(tour_ids):
+                    progress(i, len(tour_ids))
+                    if tour_id in imported:
+                        continue
+                    try:
+                        _, data = client.gpx(tour_id)
+                        done.append(ws.geo.add_track(komoot_file(tour_id), data)["id"])
+                    except KomootLoginFailed:
+                        raise KomootError("Komoot no longer accepts the login. Connect again.") from None
+                    except (KomootError, GpxError) as exc:
+                        errors.append(str(exc))
+            finally:
+                client.close()
+            progress(len(tour_ids), len(tour_ids))
+            return {"imported": len(done), "already": sum(1 for t in tour_ids if t in imported), "errors": errors}
+
+        return submit("komoot-import", run, label="Importing tours from Komoot", meta={"page": "locations"}).to_dict()
 
     def geo_options(body: GeoRequest) -> GeoOptions:
         try:

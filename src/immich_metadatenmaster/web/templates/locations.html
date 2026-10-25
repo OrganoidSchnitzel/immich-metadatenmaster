@@ -22,6 +22,31 @@
           <span class="muted">Komoot: open a completed tour → ⋯ → <em>Download GPX</em>. Strava, Garmin and other apps work the same way.</span>
         </label>
         <div id="upload-status" class="hint"></div>
+        <details class="komoot" id="komoot">
+          <summary>{{ icon("route") }} Import from Komoot</summary>
+          <form id="komoot-login" class="komoot-login" autocomplete="off" hidden>
+            <p class="muted">Lists your recorded Komoot tours here, so you don't have to download GPX files.
+              Komoot has no public interface for this: the tool uses the one Komoot's apps use. It can stop working
+              whenever Komoot changes it, and Komoot's terms may not allow it. Your password is sent to Komoot once;
+              only the token Komoot hands out is kept{% if multi %}, for you alone{% endif %}.</p>
+            <label>Komoot email <input type="email" name="email" autocomplete="off" required></label>
+            <label>Komoot password <input type="password" name="password" autocomplete="off" required></label>
+            <div class="row"><button type="submit">Connect Komoot</button><span id="komoot-login-status" class="hint" role="status"></span></div>
+          </form>
+          <div id="komoot-tours" hidden>
+            <div class="row komoot-head">
+              <span>Connected as <strong id="komoot-name"></strong></span>
+              <button type="button" class="link" id="komoot-disconnect">Disconnect</button>
+            </div>
+            <ul id="komoot-list" class="komoot-list"></ul>
+            <div class="row">
+              <button type="button" class="primary" id="komoot-import" disabled>Import selected</button>
+              <button type="button" id="komoot-more" hidden>Load older tours</button>
+              <span id="komoot-status" class="hint" role="status"></span>
+            </div>
+            <div id="komoot-job" class="job" hidden></div>
+          </div>
+        </details>
         <ul id="tracks" class="tracks"><li class="muted">Loading…</li></ul>
       </section>
 

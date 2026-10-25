@@ -402,6 +402,17 @@ tr.details > td { background: var(--bg); }
 .drop.over, .drop:hover { border-color: var(--primary); background: var(--primary-50); }
 .drop .i { display: block; margin: 0 auto 6px; width: 32px; height: 32px; color: var(--primary); }
 .drop .muted { display: block; font-size: 0.85rem; margin-top: 4px; }
+.komoot { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; }
+.komoot > summary { display: flex; align-items: center; gap: 8px; }
+.komoot > summary .i { width: 20px; height: 20px; color: var(--primary); }
+.komoot-login, #komoot-tours { margin-top: 10px; }
+.komoot-login p { font-size: 0.85rem; margin: 0 0 8px; }
+.komoot-head { justify-content: space-between; font-size: 0.9rem; }
+.komoot-list { list-style: none; padding: 0; margin: 8px 0; max-height: 34vh; overflow: auto; }
+.komoot-list li { padding: 6px 2px; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+.komoot-list li:last-child { border-bottom: 0; }
+.komoot-list label.check { display: flex; gap: 8px; align-items: flex-start; }
+.komoot-list .muted { display: block; font-size: 0.8rem; }
 .tracks { list-style: none; padding: 0; margin: 10px 0 0; max-height: 40vh; overflow: auto; }
 .tracks li { padding: 10px 2px; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
 .tracks li:last-child { border-bottom: 0; }

@@ -92,8 +92,8 @@ class Sessions:
         with self._lock, self._db:
             self._db.execute("DELETE FROM session WHERE expires < ?", (now,))
             self._db.execute("INSERT INTO session VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                             (_hash(token), server, info["id"], info["email"], info["name"], int(info["is_admin"]), kind,
-                              secret, now + SESSION_S, now))
+                             (_hash(token), server, info["id"], info["email"], info["name"], int(info["is_admin"]),
+                              kind, secret, now + SESSION_S, now))
         return token
 
     def get(self, server: str, token: str | None) -> User | None:
