@@ -26,6 +26,11 @@
     </a>
     <span class="spacer"></span>
     {% if not bare %}<span id="job-pill" class="job-pill" hidden></span>{% endif %}
+    {% if user and not bare %}
+    <a class="user-chip" href="/settings#account" title="Logged in as {{ user.email }}">
+      <span class="avatar" aria-hidden="true">{{ user.label[:1] | upper }}</span><span class="user-name">{{ user.label }}</span>
+    </a>
+    {% endif %}
     <button type="button" class="icon-btn" id="theme-toggle" aria-label="Dark or light theme" title="Dark or light theme">
       <span class="when-light">{{ icon("dark") }}</span><span class="when-dark">{{ icon("light") }}</span>
     </button>
@@ -42,7 +47,7 @@
       {% endif %}
       <div class="nav-sep"></div>
       <a class="nav-item{% if nav.startswith('/settings') %} active{% endif %}" href="/settings">{{ icon("settings") }}<span>Settings</span></a>
-      <a href="/login" id="logout"{% if not password_on %} hidden{% endif %} class="nav-item">{{ icon("logout") }}<span>Log out</span></a>
+      <a href="/login" id="logout"{% if not logout_on %} hidden{% endif %} class="nav-item">{{ icon("logout") }}<span>Log out</span></a>
     </nav>
     <div class="scrim" id="scrim" hidden></div>
     {% endif %}

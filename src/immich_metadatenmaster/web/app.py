@@ -7,7 +7,10 @@ import asyncio
 import logging
 import re
 import threading
+import time
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
@@ -21,6 +24,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from .. import users
 from ..auth import COOKIE, MIN_LENGTH, SESSION_S, Auth, LoginThrottle, hash_password, password_state, \
     verify_password
 from ..config import ENV_NAMES, ENV_ONLY, Settings, env_overrides
@@ -29,9 +33,11 @@ from ..geocode import GeocodeError, reverse as reverse_geocode, search as geocod
 from ..geotag import GeoOptions, GeoTagger, lacks_zone, place_zone
 from ..gpx import MAX_GPX_BYTES, GpxError
 from ..immich import Asset, ImmichClient, ImmichError
-from ..jobs import JobManager
+from ..jobs import Job, JobManager
+from ..komoot import Komoot, KomootError, KomootLoginFailed, file_name as komoot_file, tour_of
 from ..overview import LibraryScan, is_list, list_title
-from ..service import AgeGuesser, build_guesser, report_dict
+from ..service import AgeGuesser, SharedModels, build_guesser, report_dict
+from ..users import LoginFailed, Sessions, User
 from ..versions import VersionDates
 
 log = logging.getLogger(__name__)
@@ -43,6 +49,8 @@ CSRF_HEADER = "x-metadatenmaster"
 PUBLIC_PATHS = {"/login", "/api/login", "/healthz"}
 # A wrong password costs this long, on top of the throttle.
 FAILED_LOGIN_DELAY_S = 1.0
+# Who is logged in, for the request being handled (with several users).
+_user: ContextVar[User | None] = ContextVar("user", default=None)
 
 
 class KnownDateRequest(BaseModel):
@@ -137,12 +145,28 @@ PLACE_BATCH = 15
 
 
 class LoginRequest(BaseModel):
-    password: str = Field(max_length=1000)
+    password: str = Field(default="", max_length=1000)
+    # With several users: the Immich account, or an Immich API key instead.
+    email: str = Field(default="", max_length=320)
+    api_key: str = Field(default="", max_length=1000)
 
 
 class PasswordChange(BaseModel):
     current: str = Field(default="", max_length=1000)
     new: str = Field(default="", max_length=1000)  # empty: remove the password
+
+
+class KomootLogin(BaseModel):
+    email: str = Field(max_length=320)
+    password: str = Field(max_length=1000)
+
+
+class KomootImport(BaseModel):
+    tour_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+_TOUR_ID = re.compile(r"^\d{1,20}$")
+KOMOOT_KEY = "komoot"
 
 
 class GeoApplyRequest(BaseModel):
@@ -190,45 +214,111 @@ def local_time(value: str | None, tz_name: str) -> str:
     return dt.astimezone(zone).strftime("%Y-%m-%d %H:%M")
 
 
-class Runtime:
-    """Holds the current settings and AgeGuesser; the setup page can swap both at runtime."""
+@dataclass
+class Workspace:
+    """What one person works with: their Immich connection and their own local data."""
 
-    def __init__(self, settings: Settings, build: Callable[[Settings], AgeGuesser],
-                 guesser: AgeGuesser | None = None) -> None:
+    owner: str  # their Immich user id ("" with a single user)
+    guesser: AgeGuesser
+    geo: GeoTagger
+    versions: VersionDates
+    library: LibraryScan
+
+    @classmethod
+    def of(cls, owner: str, g: AgeGuesser) -> "Workspace":
+        return cls(owner, g, GeoTagger(g.settings, g.immich, g.store), VersionDates(g.settings, g.immich, g.store),
+                   LibraryScan(g.immich, g.store))
+
+
+def _use(client: ImmichClient, kind: str, secret: str) -> ImmichClient:
+    client.set_credentials(**{"access_token" if kind == "token" else "api_key": secret})
+    return client
+
+
+class Runtime:
+    """Holds the current settings and the workspaces (one, or one per Immich user); the settings page
+    can change both at runtime."""
+
+    def __init__(self, settings: Settings, build: Callable[..., AgeGuesser],
+                 make_client: Callable[[Settings], ImmichClient], guesser: AgeGuesser | None = None) -> None:
         self.settings = settings
         self._build = build
+        self._make_client = make_client
         self._lock = threading.Lock()
-        self.guesser = guesser if guesser is not None else (build(settings) if settings.configured else None)
-        self._geo: GeoTagger | None = None
-        self._versions: VersionDates | None = None
-        self._library: LibraryScan | None = None
+        self.models = SharedModels()
+        if guesser is None and settings.configured and not settings.multi_user:
+            guesser = self.models.share(build(settings))
+        self.guesser = guesser  # with a single user
+        self._single: Workspace | None = None
+        self._users: dict[str, Workspace] = {}
 
-    def require(self) -> AgeGuesser:
-        g = self.guesser
-        if g is None:
+    @property
+    def multi(self) -> bool:
+        return self.settings.multi_user
+
+    @property
+    def ready(self) -> bool:
+        return self.settings.configured if self.multi else self.guesser is not None
+
+    def workspace(self, user: User | None) -> Workspace:
+        if not self.ready:
             raise HTTPException(status_code=503, detail="Not set up yet: open the Settings page.")
-        return g
+        if not self.multi:
+            g = self.guesser
+            ws = self._single
+            if ws is None or ws.guesser is not g:
+                ws = self._single = Workspace.of("", g)  # type: ignore[arg-type]
+            return ws
+        if user is None:
+            raise HTTPException(status_code=401, detail="Log in first.")
+        with self._lock:
+            ws = self._users.get(user.id)
+            if ws is None:
+                s = replace(self.settings, data_dir=users.user_dir(self.settings.data_dir, user.id))
+                g = self.models.share(self._build(s, _use(self._make_client(s), user.kind, user.secret)))
+                ws = self._users[user.id] = Workspace.of(user.id, g)
+        if ws.guesser.immich.credentials != (user.kind, user.secret):
+            # The same person in another browser: carry on with the session of the latest request.
+            _use(ws.guesser.immich, user.kind, user.secret)
+        return ws
 
-    def geo(self) -> GeoTagger:
-        g = self.require()
-        geo = self._geo
-        if geo is None or geo.immich is not g.immich:
-            geo = self._geo = GeoTagger(g.settings, g.immich, g.store)
-        return geo
+    def client(self, kind: str = "", secret: str = "") -> ImmichClient:
+        """A new connection to Immich with the given credentials (none: for logging in)."""
+        return _use(self._make_client(replace(self.settings, immich_api_key="")), kind, secret)
 
-    def versions(self) -> VersionDates:
-        g = self.require()
-        v = self._versions
-        if v is None or v.immich is not g.immich:
-            v = self._versions = VersionDates(g.settings, g.immich, g.store)
-        return v
+    def session_ended(self, user: User, sessions: Sessions) -> None:
+        """A session was ended: its workspace carries on with another session of the same person."""
+        with self._lock:
+            ws = self._users.get(user.id)
+            if ws is None or ws.guesser.immich.credentials != (user.kind, user.secret):
+                return
+            other = sessions.credentials(self.settings.immich_url, user.id)
+            if other:
+                _use(ws.guesser.immich, *other)
+            else:
+                del self._users[user.id]
 
-    def library(self) -> LibraryScan:
-        g = self.require()
-        lib = self._library
-        if lib is None or lib.immich is not g.immich:
-            lib = self._library = LibraryScan(g.immich, g.store)
-        return lib
+    def claim_single_user_data(self, user: dict[str, Any] | None = None) -> None:
+        """The data of the single-user setup goes to the owner of its API key, or else to the first
+        Immich admin who logs in."""
+        data_dir = self.settings.data_dir
+        if users.owner(data_dir) or not users.has_single_user_data(data_dir):
+            return
+        who = None
+        if self.settings.immich_api_key:
+            client = self._make_client(self.settings)
+            try:
+                who = client.me()
+            except ImmichError as exc:
+                log.info("Cannot tell whose API key is configured: %s", exc)
+            finally:
+                client.close()
+        if who is None and user is not None and user["is_admin"]:
+            who = user
+        if who is not None and not (data_dir / "users" / who["id"]).exists() and users.claim(data_dir, who):
+            log.info("The data of the single-user setup now belongs to %s", who.get("email") or who["id"])
+            with self._lock:
+                self._users.pop(who["id"], None)
 
     def set_values(self, values: dict[str, Any]) -> Settings:
         """Change and save settings that need no new connection to Immich (e.g. the password)."""
@@ -239,27 +329,30 @@ class Runtime:
         return updated
 
     def reconfigure(self, settings: Settings) -> None:
+        new = None if settings.multi_user else self.models.share(self._build(settings))
         with self._lock:
-            new = self._build(settings)
             old = self.guesser
-            if old is not None and old.backend == new.backend:
+            if new is not None and old is not None and old.backend == new.backend:
                 new.adopt_model(old)
-            # The old instance is left to running jobs and the garbage collector.
+            self.models.keep_only(settings)
+            # Old instances are left to running jobs and the garbage collector.
             self.guesser, self.settings = new, settings
+            self._users.clear()
 
 
 def _client(settings: Settings) -> ImmichClient:
-    return ImmichClient(settings.immich_url, settings.immich_api_key, timeout=15)
+    return ImmichClient(settings.immich_url, settings.immich_api_key, timeout=30)
 
 
 def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None = None,
-               build: Callable[[Settings], AgeGuesser] = build_guesser,
+               build: Callable[..., AgeGuesser] = build_guesser,
                make_client: Callable[[Settings], ImmichClient] = _client,
-               geocode_transport: Any = None) -> FastAPI:
+               geocode_transport: Any = None, komoot_transport: Any = None) -> FastAPI:
     if settings is None:
         settings = guesser.settings if guesser is not None else Settings.load()
-    runtime = Runtime(settings, build, guesser)
+    runtime = Runtime(settings, build, make_client, guesser)
     jobs = JobManager()
+    sessions = Sessions(settings.data_dir)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -267,9 +360,30 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         jobs.shutdown()
 
     app = FastAPI(title="Immich Metadatenmaster", lifespan=lifespan)
-    geo = runtime.geo
-    versions = runtime.versions
-    library = runtime.library
+
+    def workspace() -> Workspace:
+        return runtime.workspace(_user.get())
+
+    def g() -> AgeGuesser:
+        return workspace().guesser
+
+    def geo() -> GeoTagger:
+        return workspace().geo
+
+    def versions() -> VersionDates:
+        return workspace().versions
+
+    def library() -> LibraryScan:
+        return workspace().library
+
+    def owner() -> str:
+        user = _user.get()
+        return user.id if user is not None else ""
+
+    def submit(kind: str, fn: Callable[[Callable[[int, int], None]], Any], **kwargs: Any) -> Job:
+        """Start a background job of the person logged in."""
+        return jobs.submit(kind, fn, owner=owner(), **kwargs)
+
     templates = Jinja2Templates(directory=_HERE / "templates")
     templates.env.filters["local_time"] = lambda value: local_time(value, runtime.settings.timezone)
     app.mount("/static", StaticFiles(directory=_HERE / "static"), name="static")
@@ -285,36 +399,85 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     auth = Auth(settings.data_dir)
     throttle = LoginThrottle()
 
+    def needs_login(request: Request) -> Response:
+        path = request.url.path
+        if path.startswith(("/api/", "/thumb/")):
+            return JSONResponse({"detail": "Log in first.", "login": True}, status_code=401)
+        target = path + (f"?{request.url.query}" if request.url.query else "")
+        return RedirectResponse(f"/login?next={quote(target, safe='')}", status_code=303)
+
+    def end_session(user: User) -> None:
+        sessions.delete(user.session)
+        runtime.session_ended(user, sessions)
+
+    async def logged_in(request: Request) -> User | None:
+        """The person this browser is logged in as (checked with Immich every few minutes)."""
+        user = sessions.get(runtime.settings.immich_url, request.cookies.get(COOKIE))
+        if user is None or time.time() - user.checked < users.RECHECK_S:
+            return user
+        client = runtime.client(user.kind, user.secret)
+        try:
+            info = await run_in_threadpool(users.check, client)
+        except ImmichError as exc:  # Immich is down: nobody is logged out for that
+            log.info("Cannot check the session of %s: %s", user.email, exc)
+            return user
+        finally:
+            client.close()
+        if info is None or info["id"] != user.id:
+            log.info("Immich no longer accepts the session of %s", user.email)
+            end_session(user)
+            return None
+        sessions.update(user, info)
+        return user
+
     @app.middleware("http")
     async def login_guard(request: Request, call_next):
-        """With a password set, everything but the login page needs the session cookie."""
+        """With a password set, or with several users, everything but the login page needs a session."""
         path = request.url.path
-        if Auth.enabled(runtime.settings) and path not in PUBLIC_PATHS and not path.startswith("/static/") \
+        public = path in PUBLIC_PATHS or path.startswith("/static/")
+        if runtime.multi:
+            if not runtime.settings.configured:  # first setup: the settings page is open
+                return await call_next(request)
+            user = await logged_in(request)
+            if user is None and not public:
+                return needs_login(request)
+            token = _user.set(user)
+            try:
+                return await call_next(request)
+            finally:
+                _user.reset(token)
+        if Auth.enabled(runtime.settings) and not public \
                 and not auth.valid(runtime.settings, request.cookies.get(COOKIE)):
-            if path.startswith(("/api/", "/thumb/")):
-                return JSONResponse({"detail": "Log in first.", "login": True}, status_code=401)
-            target = path + (f"?{request.url.query}" if request.url.query else "")
-            return RedirectResponse(f"/login?next={quote(target, safe='')}", status_code=303)
+            return needs_login(request)
         return await call_next(request)
 
-    def start_session(response: Response, request: Request, s: Settings) -> None:
+    def set_cookie(response: Response, request: Request, value: str) -> None:
         proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
-        response.set_cookie(COOKIE, auth.issue(s), max_age=SESSION_S, httponly=True, samesite="lax",
+        response.set_cookie(COOKIE, value, max_age=SESSION_S, httponly=True, samesite="lax",
                             secure=proto == "https", path="/")
+
+    def start_session(response: Response, request: Request, s: Settings) -> None:
+        set_cookie(response, request, auth.issue(s))
+
+    def require_admin() -> None:
+        """With several users, only Immich admins change the settings."""
+        if runtime.multi and runtime.settings.configured:
+            user = _user.get()
+            if user is None or not user.is_admin:
+                raise HTTPException(status_code=403, detail="Only Immich administrators can change the settings.")
 
     def bad_request(exc: Exception) -> HTTPException:
         return HTTPException(status_code=400, detail=str(exc))
 
     def page(request: Request, name: str, **context: Any) -> Response:
-        return templates.TemplateResponse(request, name, {"configured": runtime.guesser is not None,
-                                                          "nav": request.url.path,
-                                                          "password_on": Auth.enabled(runtime.settings), **context})
+        multi = runtime.multi and runtime.settings.configured
+        return templates.TemplateResponse(request, name, {
+            "configured": runtime.ready, "nav": request.url.path, "multi": multi, "user": _user.get(),
+            "logout_on": multi or (not runtime.multi and Auth.enabled(runtime.settings)), **context})
 
     def setup_redirect() -> None:
-        if runtime.guesser is None:
+        if not runtime.ready:
             raise _Redirect("/settings")
-
-    g = runtime.require
 
     # --- pages ------------------------------------------------------------------------------
 
@@ -383,14 +546,39 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
 
     @app.get("/login", response_class=HTMLResponse)
     def login_page(request: Request, next: str = "/") -> Response:
-        if not Auth.enabled(runtime.settings):
+        if not (runtime.multi and runtime.settings.configured) and not Auth.enabled(runtime.settings):
             return RedirectResponse("/", status_code=303)
         return page(request, "login.html", next=safe_next(next), bare=True)
+
+    async def immich_login(request: Request, body: LoginRequest) -> Response:
+        """Log in with an Immich account (email and password, or an API key)."""
+        if throttle.blocked():
+            raise HTTPException(status_code=429, detail="Too many failed logins. Try again in a few minutes.")
+        if not body.api_key.strip() and not (body.email.strip() and body.password):
+            raise bad_request(ValueError("Enter your email and password."))
+        client = runtime.client()
+        try:
+            info, kind, secret = await run_in_threadpool(users.log_in, client, email=body.email.strip(),
+                                                         password=body.password, api_key=body.api_key.strip())
+        except LoginFailed as exc:
+            throttle.failed()
+            await asyncio.sleep(FAILED_LOGIN_DELAY_S)
+            raise HTTPException(status_code=401, detail=str(exc)) from None
+        except ImmichError as exc:
+            raise HTTPException(status_code=502, detail=f"Immich cannot be reached: {exc}") from None
+        finally:
+            client.close()
+        await run_in_threadpool(runtime.claim_single_user_data, info)
+        response = JSONResponse({"ok": True, "name": info["name"]})
+        set_cookie(response, request, sessions.create(runtime.settings.immich_url, info, kind, secret))
+        return response
 
     @app.post("/api/login")
     async def login(request: Request, body: LoginRequest) -> Response:
         s = runtime.settings
-        if not Auth.enabled(s):
+        if runtime.multi and s.configured:
+            return await immich_login(request, body)
+        if runtime.multi or not Auth.enabled(s):
             return JSONResponse({"ok": True})
         if throttle.blocked():
             raise HTTPException(status_code=429, detail="Too many wrong passwords. Try again in a few minutes.")
@@ -404,13 +592,24 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
 
     @app.post("/api/logout")
     def logout() -> Response:
+        user = _user.get()
+        if user is not None:
+            end_session(user)
+            if user.kind == "token":  # end the Immich session this login started
+                client = runtime.client(user.kind, user.secret)
+                try:
+                    client.logout()
+                except ImmichError as exc:
+                    log.info("Immich logout failed: %s", exc)
+                finally:
+                    client.close()
         response = JSONResponse({"ok": True})
         response.delete_cookie(COOKIE, path="/")
         return response
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
-        return {"ok": True, "configured": runtime.guesser is not None}
+        return {"ok": True, "configured": runtime.ready}
 
     @app.get("/thumb/{asset_id}")
     def thumbnail(asset_id: str, size: str = "thumbnail") -> Response:
@@ -427,12 +626,16 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         s = runtime.settings
+        user = _user.get()
         values = {name: getattr(s, name) for name in ENV_NAMES if name != "immich_api_key" and name not in ENV_ONLY}
         return {"values": values, "has_api_key": bool(s.immich_api_key), "locked": sorted(env_overrides()),
-                "configured": runtime.guesser is not None, "data_dir": str(s.data_dir),
-                "password": password_state(s), "password_min_length": MIN_LENGTH}
+                "configured": runtime.ready, "data_dir": str(s.data_dir),
+                "password": password_state(s), "password_min_length": MIN_LENGTH,
+                "can_edit": not (runtime.multi and s.configured) or bool(user and user.is_admin),
+                "user": {"name": user.name, "email": user.email, "is_admin": user.is_admin,
+                         "login": "API key" if user.kind == "api_key" else "password"} if user else None}
 
-    @app.put("/api/settings/password")
+    @app.put("/api/settings/password", dependencies=[Depends(require_admin)])
     async def change_password(request: Request, body: PasswordChange) -> Response:
         s = runtime.settings
         state = password_state(s)
@@ -456,43 +659,59 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         values = {k: v for k, v in body.items() if k in ENV_NAMES and k not in locked and k not in ENV_ONLY}
         new_url = str(values.get("immich_url", current.immich_url)).strip().rstrip("/")
         if not values.get("immich_api_key"):
+            values.pop("immich_api_key", None)
             # Never send the saved key to a server it was not entered for.
             if new_url != current.immich_url and "immich_api_key" not in locked:
-                raise ValueError("Enter the API key again when changing the Immich URL.")
-            values.pop("immich_api_key", None)
+                if not current.with_values(values).multi_user:
+                    raise ValueError("Enter the API key again when changing the Immich URL.")
+                values["immich_api_key"] = ""  # not needed with several users
         merged = current.with_values(values)
         merged.validate()
         return merged
 
-    @app.post("/api/settings/test")
+    def missing(s: Settings) -> ValueError:
+        return ValueError("Enter the Immich URL." if s.multi_user else "Enter the Immich URL and an API key.")
+
+    @app.post("/api/settings/test", dependencies=[Depends(require_admin)])
     def test_connection(body: ConnectionTest) -> dict[str, Any]:
         try:
             s = merged_settings(body.model_dump())
         except ValueError as exc:
             raise bad_request(exc) from exc
-        if not s.configured:
+        user = _user.get()
+        if not s.immich_url or not (s.immich_api_key or s.multi_user):
             raise bad_request(ValueError("Enter the Immich URL and an API key."))
-        return _probe(make_client(s))
+        if s.immich_api_key:
+            return _probe(make_client(s))
+        if user is not None and s.immich_url == runtime.settings.immich_url:
+            # With several users and no API key: test with this person's login (never sent to another server).
+            return _probe(_use(make_client(s), user.kind, user.secret))
+        return _probe(make_client(s), reach_only=True)
 
-    @app.put("/api/settings")
+    @app.put("/api/settings", dependencies=[Depends(require_admin)])
     def save_settings(body: dict[str, Any]) -> dict[str, Any]:
         try:
             s = merged_settings(body)
         except (ValueError, TypeError) as exc:
             raise bad_request(exc) from exc
         if not s.configured:
-            raise bad_request(ValueError("Enter the Immich URL and an API key."))
+            raise bad_request(missing(s))
+        moved = s.immich_url != runtime.settings.immich_url
         s.save(exclude=env_overrides())
         runtime.reconfigure(s)
-        return {"ok": True}
+        if s.multi_user:
+            runtime.claim_single_user_data()
+        # Turning on several users, or another Immich server (its sessions are gone): log in next.
+        return {"ok": True, "login": s.multi_user and (_user.get() is None or moved)}
 
     # --- data -------------------------------------------------------------------------------
 
-    def assets_of(album_id: str) -> list[Asset]:
+    def assets_of(album_id: str, ws: Workspace | None = None) -> list[Asset]:
         """The photos of an album, or of a list from the library overview."""
+        ws = ws or workspace()
         if is_list(album_id):
-            return library().list_assets(album_id)
-        return g().immich.album_assets(album_id)
+            return ws.library.list_assets(album_id)
+        return ws.guesser.immich.album_assets(album_id)
 
     @app.get("/api/albums/{album_id}/assets")
     def album_assets(album_id: str) -> dict[str, Any]:
@@ -574,7 +793,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         except ValueError as exc:
             raise bad_request(exc) from exc
         album = body.album_id if body.remove_from_album and not is_list(body.album_id) else None
-        job = jobs.submit("known-date", lambda progress: guesser.apply_known_date(
+        job = submit("known-date", lambda progress: guesser.apply_known_date(
             body.asset_ids, spec, keep_order=body.keep_order, remove_from_album=album, progress=progress),
             label="Writing dates", meta={"album_id": body.album_id})
         return job.to_dict()
@@ -587,21 +806,21 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
             not_after = parse_year_bound(body.not_after, end=True)
         except ValueError as exc:
             raise bad_request(exc) from exc
-        job = jobs.submit("estimate", lambda progress: guesser.estimate(
+        job = submit("estimate", lambda progress: guesser.estimate(
             body.asset_ids, joint=body.joint, not_before=not_before, not_after=not_after, progress=progress),
             label="Analysing faces", meta={"album_id": body.album_id})
         return job.to_dict()
 
     @app.post("/api/name-dates")
     def name_dates(body: NameDateRequest) -> dict[str, Any]:
-        guesser = g()
+        ws = workspace()
         wanted = set(body.asset_ids)
 
         def run(progress: Callable[[int, int], None]) -> dict[str, Any]:
-            assets = [a for a in assets_of(body.album_id) if a.id in wanted]
-            return guesser.suggest_name_dates(assets, progress=progress)
+            assets = [a for a in assets_of(body.album_id, ws) if a.id in wanted]
+            return ws.guesser.suggest_name_dates(assets, progress=progress)
 
-        return jobs.submit("name-dates", run, label="Reading file names", meta={"album_id": body.album_id}).to_dict()
+        return submit("name-dates", run, label="Reading file names", meta={"album_id": body.album_id}).to_dict()
 
     @app.post("/api/apply-estimates")
     def apply_estimates(body: ApplyRequest) -> dict[str, Any]:
@@ -627,7 +846,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
                 merged["remove_error"] = first.get("remove_error") or second.get("remove_error")
             return merged
 
-        return jobs.submit("apply", run, label="Writing dates", meta={"album_id": body.album_id}).to_dict()
+        return submit("apply", run, label="Writing dates", meta={"album_id": body.album_id}).to_dict()
 
     @app.post("/api/discard-estimates")
     def discard_estimates(body: AssetIds) -> dict[str, Any]:
@@ -639,7 +858,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     @app.post("/api/calibrate")
     def calibrate(body: CalibrateRequest) -> dict[str, Any]:
         guesser = g()
-        job = jobs.submit("calibrate", lambda progress: report_dict(
+        job = submit("calibrate", lambda progress: report_dict(
             guesser.calibrate(per_person=body.per_person, progress=progress)), label="Calibrating the age model")
         return job.to_dict()
 
@@ -652,16 +871,16 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     @app.post("/api/library/scan")
     def library_scan() -> dict[str, Any]:
         lib = library()
-        return jobs.submit("library-scan", lambda progress: lib.scan(progress=progress),
-                           label="Scanning the library", meta={"href": "/#library"}).to_dict()
+        return submit("library-scan", lambda progress: lib.scan(progress=progress),
+                      label="Scanning the library", meta={"href": "/#library"}).to_dict()
 
     # --- versions of a photo (HDR, panoramas, edits) -------------------------------------------
 
     @app.post("/api/versions/find")
     def versions_find(body: VersionFindRequest) -> dict[str, Any]:
         v = versions()
-        return jobs.submit("versions-find", lambda progress: v.find(body.album_id or None, progress=progress),
-                           label="Looking for versions", meta={"page": "dates"}).to_dict()
+        return submit("versions-find", lambda progress: v.find(body.album_id or None, progress=progress),
+                      label="Looking for versions", meta={"page": "dates"}).to_dict()
 
     @app.get("/api/versions")
     def versions_list() -> list[dict[str, Any]]:
@@ -671,8 +890,8 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     @app.post("/api/versions/apply")
     def versions_apply(body: AssetIds) -> dict[str, Any]:
         v = versions()
-        return jobs.submit("versions-apply", lambda progress: v.apply(body.asset_ids, progress=progress),
-                           label="Copying dates from originals", meta={"page": "dates"}).to_dict()
+        return submit("versions-apply", lambda progress: v.apply(body.asset_ids, progress=progress),
+                      label="Copying dates from originals", meta={"page": "dates"}).to_dict()
 
     @app.post("/api/versions/discard")
     def versions_discard(body: AssetIds) -> dict[str, Any]:
@@ -721,6 +940,97 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         geo().delete_track(track_id)
         return {"deleted": track_id}
 
+    # --- Komoot -------------------------------------------------------------------------------
+
+    def komoot_account(ws: Workspace) -> dict[str, str]:
+        account = ws.guesser.store.get_value(KOMOOT_KEY)
+        if not account:
+            raise bad_request(ValueError("Connect Komoot first."))
+        return account
+
+    def komoot_tracks(ws: Workspace) -> dict[str, str]:
+        """Tours already imported: tour id → track id."""
+        return {tour: t["id"] for t in ws.guesser.store.tracks(with_points=False)
+                if (tour := tour_of(t["file_name"])) is not None}
+
+    @app.get("/api/komoot")
+    def komoot_status() -> dict[str, Any]:
+        account = workspace().guesser.store.get_value(KOMOOT_KEY)
+        return {"connected": bool(account), "name": account["name"] if account else None}
+
+    @app.post("/api/komoot/connect")
+    async def komoot_connect(body: KomootLogin) -> dict[str, Any]:
+        """Log in to Komoot once; only the token it hands out is kept (in this person's data)."""
+        ws = workspace()
+        client = Komoot(transport=komoot_transport)
+        try:
+            account = await run_in_threadpool(client.log_in, body.email.strip(), body.password)
+        except KomootLoginFailed as exc:
+            await asyncio.sleep(FAILED_LOGIN_DELAY_S)
+            raise bad_request(exc) from None
+        except KomootError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from None
+        finally:
+            client.close()
+        ws.guesser.store.set_value(KOMOOT_KEY, account)
+        return {"connected": True, "name": account["name"]}
+
+    @app.post("/api/komoot/disconnect")
+    def komoot_disconnect() -> dict[str, Any]:
+        workspace().guesser.store.set_value(KOMOOT_KEY, None)
+        return {"connected": False, "name": None}
+
+    @app.get("/api/komoot/tours")
+    def komoot_tours(page: int = 0) -> dict[str, Any]:
+        ws = workspace()
+        account = komoot_account(ws)
+        client = Komoot(account["user_id"], account["token"], transport=komoot_transport)
+        try:
+            data = client.tours(max(page, 0))
+        except KomootLoginFailed:
+            ws.guesser.store.set_value(KOMOOT_KEY, None)
+            raise bad_request(ValueError("Komoot no longer accepts the login. Connect again.")) from None
+        except KomootError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from None
+        finally:
+            client.close()
+        imported = komoot_tracks(ws)
+        for tour in data["tours"]:
+            tour["track_id"] = imported.get(tour["id"])
+        return data
+
+    @app.post("/api/komoot/import")
+    def komoot_import(body: KomootImport) -> dict[str, Any]:
+        ws = workspace()
+        account = komoot_account(ws)
+        tour_ids = list(dict.fromkeys(body.tour_ids))
+        if not all(_TOUR_ID.match(t) for t in tour_ids):
+            raise bad_request(ValueError("Unknown tour."))
+
+        def run(progress: Callable[[int, int], None]) -> dict[str, Any]:
+            imported = komoot_tracks(ws)
+            done: list[str] = []
+            errors: list[str] = []
+            client = Komoot(account["user_id"], account["token"], transport=komoot_transport)
+            try:
+                for i, tour_id in enumerate(tour_ids):
+                    progress(i, len(tour_ids))
+                    if tour_id in imported:
+                        continue
+                    try:
+                        _, data = client.gpx(tour_id)
+                        done.append(ws.geo.add_track(komoot_file(tour_id), data)["id"])
+                    except KomootLoginFailed:
+                        raise KomootError("Komoot no longer accepts the login. Connect again.") from None
+                    except (KomootError, GpxError) as exc:
+                        errors.append(str(exc))
+            finally:
+                client.close()
+            progress(len(tour_ids), len(tour_ids))
+            return {"imported": len(done), "already": sum(1 for t in tour_ids if t in imported), "errors": errors}
+
+        return submit("komoot-import", run, label="Importing tours from Komoot", meta={"page": "locations"}).to_dict()
+
     def geo_options(body: GeoRequest) -> GeoOptions:
         try:
             tz_name = body.camera_tz or runtime.settings.timezone
@@ -741,15 +1051,15 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     @app.post("/api/geo/find")
     def geo_find(body: GeoRequest) -> dict[str, Any]:
         tagger, opts = geo(), geo_options(body)
-        return jobs.submit("geo-find", lambda progress: tagger.find(opts, progress=progress),
-                           label="Searching photos without a location", meta={"page": "locations"}).to_dict()
+        return submit("geo-find", lambda progress: tagger.find(opts, progress=progress),
+                      label="Searching photos without a location", meta={"page": "locations"}).to_dict()
 
     @app.post("/api/geo/clock-check")
     def geo_clock_check(body: GeoRequest) -> dict[str, Any]:
         """Work out the cameras' clock offsets from photos of the same moments (nothing is written)."""
         tagger, opts = geo(), geo_options(body)
-        return jobs.submit("geo-clocks", lambda progress: tagger.check_clocks(opts, progress=progress),
-                           label="Checking camera clocks", meta={"page": "locations"}).to_dict()
+        return submit("geo-clocks", lambda progress: tagger.check_clocks(opts, progress=progress),
+                      label="Checking camera clocks", meta={"page": "locations"}).to_dict()
 
     @app.get("/api/geo/suggestions")
     def geo_suggestions() -> dict[str, Any]:
@@ -840,7 +1150,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     @app.post("/api/geo/apply")
     def geo_apply(body: GeoApplyRequest) -> dict[str, Any]:
         tagger = geo()
-        return jobs.submit("geo-apply", lambda progress: tagger.apply(
+        return submit("geo-apply", lambda progress: tagger.apply(
             body.asset_ids, fix_time=body.fix_time, local_time=body.local_time, progress=progress),
             label="Writing locations", meta={"page": "locations"}).to_dict()
 
@@ -872,17 +1182,17 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
         if not guesser.history.undoable(batch):
             raise bad_request(ValueError("This change cannot be undone."))
         # Not cancellable: removing locations needs its second step, waiting for Immich, to finish.
-        return jobs.submit("undo", lambda progress: guesser.history.undo(batch_id, progress=progress),
-                           label="Undoing a change", meta={"page": "history"}, cancellable=False).to_dict()
+        return submit("undo", lambda progress: guesser.history.undo(batch_id, progress=progress),
+                      label="Undoing a change", meta={"page": "history"}, cancellable=False).to_dict()
 
     @app.get("/api/jobs")
     def active_jobs() -> list[dict[str, Any]]:
         """Jobs waiting or running, so that pages can show them again after a reload."""
-        return [j.to_dict() for j in jobs.active()]
+        return [j.to_dict() for j in jobs.active(owner())]
 
     @app.get("/api/jobs/{job_id}")
     def job_status(job_id: str) -> dict[str, Any]:
-        job = jobs.get(job_id)
+        job = jobs.get(job_id, owner())
         if job is None:
             raise HTTPException(status_code=404, detail="Unknown job")
         return job.to_dict()
@@ -890,7 +1200,7 @@ def create_app(guesser: AgeGuesser | None = None, *, settings: Settings | None =
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel_job(job_id: str) -> dict[str, Any]:
         try:
-            job = jobs.cancel(job_id)
+            job = jobs.cancel(job_id, owner())
         except ValueError as exc:
             raise bad_request(exc) from exc
         if job is None:
@@ -909,7 +1219,7 @@ class _Redirect(Exception):
         self.location = location
 
 
-def _probe(client: ImmichClient) -> dict[str, Any]:
+def _probe(client: ImmichClient, reach_only: bool = False) -> dict[str, Any]:
     """Check that Immich is reachable and the key can read what the tool needs."""
     checks: list[dict[str, Any]] = []
     try:
@@ -918,7 +1228,7 @@ def _probe(client: ImmichClient) -> dict[str, Any]:
         except ImmichError as exc:
             return {"ok": False, "checks": [{"label": "Reach Immich", "ok": False, "detail": str(exc)}]}
         checks.append({"label": f"Reach Immich {version}", "ok": True, "detail": ""})
-        for label, fn in [
+        for label, fn in [] if reach_only else [
             ("Read albums (album.read)", client.albums),
             ("Read people (person.read)", lambda: client._json("GET", "/people", params={"size": 1})),
             ("Read photos (asset.read)", lambda: client._json("POST", "/search/metadata", json={"size": 1})),

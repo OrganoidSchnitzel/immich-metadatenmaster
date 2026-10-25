@@ -36,7 +36,8 @@ numbers right away; changes made in Immich show after the next scan.
 ## Locations from GPX tracks
 
 1. Open **Locations** and drop your GPX files onto the page. From Komoot: open a *completed* tour
-   → ⋯ → *Download GPX*. Strava, Garmin Connect, OsmAnd and most other apps export GPX too.
+   → ⋯ → *Download GPX*, or import them directly (see below). Strava, Garmin Connect, OsmAnd and
+   most other apps export GPX too.
    - A **planned** route has no times. The tool asks when you walked it and assumes a constant
      pace; those suggestions are marked *low confidence*.
 2. Tick the tracks to use and click **Find suggestions**. The tool searches Immich for photos and
@@ -62,6 +63,19 @@ numbers right away; changes made in Immich show after the next scan.
 Each suggestion shows the name of the place (“📍 Höllentalangerhütte, Grainau”), so you can check
 it without zooming in. Immich fills in its own place names (city, country) after writing. Immich has
 no API to set the altitude, so the GPX elevation is only shown, not written.
+
+### Tours straight from Komoot
+
+Under **Import from Komoot** on the Locations page, log in with your Komoot email and password once.
+Your recorded tours are listed (newest first); tick the ones you want and click **Import**. They
+become tracks like uploaded GPX files, with the time of every point; imported tours are marked and
+not imported twice.
+
+> Komoot has no public interface for this. The tool uses the one Komoot's own apps use (as the
+> open-source tools *komootgpx* and *kompy* do), so it can stop working whenever Komoot changes it,
+> and Komoot's terms of use may not allow it. Use it at your own risk; downloading GPX files by
+> hand always works. Your password goes to Komoot once; the tool keeps only the token Komoot hands
+> out (with several users: per person), until you click **Disconnect**.
 
 ### Placing photos by address
 
@@ -226,6 +240,28 @@ description, for example:
 - **Password:** set one under *Settings → Password* (or with `UI_PASSWORD`) if others can reach the
   tool. Browsers stay logged in for 30 days; a new password logs out all other browsers.
 
+## Several users
+
+Under *Settings → Who uses this tool* choose **Everyone with an Immich account** (or set
+`MULTI_USER=true`). Then:
+
+- Everyone logs in with their **Immich email and password** and works on their own photos only,
+  with exactly the rights Immich gives them (shared albums included). The tool keeps only the token of
+  the Immich session, never the password; logging out ends that Immich session too. It shows up in
+  Immich under *Account Settings → Authorized devices*, where it can also be ended.
+- Accounts without a password (OAuth login only) log in with an **Immich API key** instead (*Log in with
+  an API key instead* on the login page; give the key all permissions).
+- Suggestions, GPX tracks, the History and the calibration are kept **per person** (in
+  `DATA_DIR/users/<Immich user id>/`). Nobody sees or cancels the jobs of others.
+- Only **Immich administrators** change the settings. The API key there becomes optional.
+- What you did before with one API key stays with the owner of that key: they find their History,
+  tracks and suggestions where they left them. Without an API key it goes to the first Immich
+  administrator who logs in.
+- The age model is loaded once and shared. Jobs run one after another, also across users (the model
+  needs the CPU), so a long estimate of one person delays the others.
+- Sessions last 30 days and are checked with Immich every 10 minutes: a user deleted in Immich, or a
+  session ended there, is logged out here as well. Changing the Immich URL logs everybody out.
+
 ## History, tags and undo
 
 - Changed photos are tagged, so you can find them in Immich: `Metadatenmaster/Date/Manual`,
@@ -285,7 +321,8 @@ downloaded model (about 100 MB, fetched on the first estimate) live in the `/dat
 
 > The web UI holds an API key that can change your photos, and has no password until you set one
 > under *Settings → Password* (or with `UI_PASSWORD`). Set one if others can reach the tool, and
-> make it reachable from the internet only through HTTPS (e.g. your reverse proxy).
+> make it reachable from the internet only through HTTPS (e.g. your reverse proxy). If several
+> people use it, let each log in with their Immich account instead (see [Several users](#several-users)).
 
 **Updating:** `docker compose pull && docker compose up -d`.
 
@@ -373,6 +410,7 @@ is shown read-only on the Settings page.
 | `GEOCODER_URL` | `https://photon.komoot.io` | address search on the map; empty to switch it off |
 | `PLACE_NAMES` | `true` | show place names next to location suggestions (uses the geocoder) |
 | `UI_PASSWORD` | – | password for the web UI (instead of setting one on the Settings page) |
+| `MULTI_USER` | `false` | everyone logs in with their Immich account (see [Several users](#several-users)) |
 | `WRITE_DESCRIPTION` | `true` | add the explanation line to estimated photos |
 | `DATA_DIR` | `/data` in Docker | where settings, GPX tracks, records and the model are stored |
 

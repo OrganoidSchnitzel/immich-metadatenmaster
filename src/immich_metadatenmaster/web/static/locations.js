@@ -411,6 +411,120 @@ fileInput.addEventListener("change", () => { upload([...fileInput.files]); fileI
 ["dragleave", "drop"].forEach(t => drop.addEventListener(t, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", ev => upload([...ev.dataTransfer.files].filter(f => /\.gpx$/i.test(f.name) || f.type.includes("gpx"))));
 
+// --- Komoot ------------------------------------------------------------------------------------
+
+const komoot = { page: 0, pages: 0, tours: [] };
+
+function renderKomoot() {
+  const list = document.getElementById("komoot-list");
+  if (!komoot.tours.length) {
+    list.innerHTML = `<li class="muted">No recorded tours.</li>`;
+  } else {
+    list.innerHTML = komoot.tours.map(t => {
+      const km = t.distance_m ? ` · ${(t.distance_m / 1000).toFixed(1)} km` : "";
+      const when = t.date ? fmtInstant(t.date) : "";
+      return `<li><label class="check"><input type="checkbox" data-tour="${esc(t.id)}" ${t.track_id ? "disabled checked" : ""}>
+        <span>${esc(t.name)}<span class="muted">${esc(when)}${km}${t.track_id ? " · imported" : ""}</span></span></label></li>`;
+    }).join("");
+  }
+  document.getElementById("komoot-more").hidden = komoot.page + 1 >= komoot.pages;
+  updateKomootButton();
+}
+
+function selectedTours() {
+  return [...document.querySelectorAll("#komoot-list input[data-tour]:checked:not(:disabled)")].map(el => el.dataset.tour);
+}
+
+function updateKomootButton() {
+  const n = selectedTours().length;
+  const btn = document.getElementById("komoot-import");
+  btn.disabled = !n;
+  btn.textContent = n ? `Import ${n} tour${n === 1 ? "" : "s"}` : "Import selected";
+}
+
+async function loadKomootTours(page) {
+  const status = document.getElementById("komoot-status");
+  status.textContent = "Loading tours…";
+  status.classList.remove("error");
+  try {
+    const data = await api("GET", `/api/komoot/tours?page=${page}`);
+    komoot.tours = page ? komoot.tours.concat(data.tours) : data.tours;
+    komoot.page = data.page;
+    komoot.pages = data.pages;
+    status.textContent = "";
+    renderKomoot();
+  } catch (e) {
+    status.textContent = e.message;
+    status.classList.add("error");
+    if (/Connect again/.test(e.message)) await loadKomoot();
+  }
+}
+
+async function loadKomoot() {
+  const state = await api("GET", "/api/komoot");
+  document.getElementById("komoot-login").hidden = state.connected;
+  document.getElementById("komoot-tours").hidden = !state.connected;
+  document.getElementById("komoot-name").textContent = state.name || "";
+  const box = document.getElementById("komoot");
+  if (state.connected && box.open) await loadKomootTours(0);
+}
+
+document.getElementById("komoot").addEventListener("toggle", async (ev) => {
+  if (ev.target.open && !document.getElementById("komoot-tours").hidden && !komoot.pages) await loadKomootTours(0);
+});
+
+document.getElementById("komoot-login").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  const status = document.getElementById("komoot-login-status");
+  status.classList.remove("error");
+  status.textContent = "Connecting…";
+  try {
+    await api("POST", "/api/komoot/connect", { email: f.email.value.trim(), password: f.password.value });
+    ev.target.reset();
+    status.textContent = "";
+    await loadKomoot();
+  } catch (e) {
+    status.textContent = e.message;
+    status.classList.add("error");
+  }
+});
+
+document.getElementById("komoot-disconnect").addEventListener("click", async () => {
+  await api("POST", "/api/komoot/disconnect");
+  komoot.tours = []; komoot.pages = 0;
+  await loadKomoot();
+});
+
+document.getElementById("komoot-more").addEventListener("click", () => loadKomootTours(komoot.page + 1));
+document.getElementById("komoot-list").addEventListener("change", updateKomootButton);
+
+async function afterKomootImport(r) {
+  await loadTracks();
+  fitMap();
+  await loadKomootTours(0);
+  const status = document.getElementById("komoot-status");
+  if (r) {
+    status.textContent = [r.imported ? `Imported ${r.imported} tour${r.imported === 1 ? "" : "s"}.` : "", ...r.errors]
+      .filter(Boolean).join(" ");
+    status.classList.toggle("error", r.errors.length > 0);
+  }
+}
+
+document.getElementById("komoot-import").addEventListener("click", async () => {
+  const ids = selectedTours();
+  if (!ids.length) return;
+  document.getElementById("komoot-import").disabled = true;
+  try {
+    const job = await api("POST", "/api/komoot/import", { tour_ids: ids });
+    const r = await followJob(job, document.getElementById("komoot-job"), "Importing from Komoot");
+    await afterKomootImport(r);
+  } catch (e) {
+    if (!e.cancelled) alert(e.message);
+    updateKomootButton();
+  }
+});
+
 document.getElementById("tracks").addEventListener("click", async (ev) => {
   const el = ev.target.closest("[data-action]");
   if (!el) return;
@@ -1116,6 +1230,11 @@ try {
 
 restoreForm();
 form.elements.camera_tz.addEventListener("change", renderTracks);
+loadKomoot().catch(() => {});
+resumeJob(j => j.kind === "komoot-import", document.getElementById("komoot-job"), (r) => {
+  document.getElementById("komoot").open = true;
+  return afterKomootImport(r);
+});
 Promise.all([loadTracks(), loadSuggestions(), loadNoLocation()]).then(fitMap).then(searchFromOverview).catch(e => {
   document.getElementById("tracks").innerHTML = `<li class="notice error">${esc(e.message)}</li>`;
 }).then(() => Promise.all([

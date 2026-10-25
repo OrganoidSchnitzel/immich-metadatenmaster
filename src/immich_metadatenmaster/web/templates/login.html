@@ -5,7 +5,21 @@
   <h1>Log in</h1>
   <form id="login-form" class="settings" data-next="{{ next }}">
     <fieldset>
+      {% if multi %}
+      <p class="muted">Log in with your Immich account. You work on your own photos only.</p>
+      <div id="with-password">
+        <label>Email <input type="email" name="email" autocomplete="username" autofocus></label>
+        <label>Password <input type="password" name="password" autocomplete="current-password"></label>
+      </div>
+      <div id="with-key" hidden>
+        <label>Immich API key <input type="password" name="api_key" autocomplete="off">
+          <small>For accounts without a password (e.g. login with OAuth). Create one in Immich under
+            <em>Account Settings → API Keys</em>; give it all permissions.</small></label>
+      </div>
+      <p><a href="#" id="login-kind">Log in with an API key instead</a></p>
+      {% else %}
       <label>Password <input type="password" name="password" autocomplete="current-password" autofocus required></label>
+      {% endif %}
       <div class="row">
         <button type="submit" class="primary">Log in</button>
         <span id="login-status" class="hint" role="status"></span>

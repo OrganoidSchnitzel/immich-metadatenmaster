@@ -4,6 +4,7 @@ const form = document.getElementById("settings");
 const checks = document.getElementById("checks");
 const saveStatus = document.getElementById("save-status");
 let configured = false;
+let keySaved = false;
 
 function fieldValues() {
   const values = {};
@@ -19,6 +20,17 @@ function showOllama() {
   form.querySelectorAll("[data-show=ollama]").forEach(el => { el.hidden = !ollama; });
 }
 
+function showUsers() {
+  const multi = form.elements.multi_user.value === "true";
+  document.getElementById("users-hint").textContent = multi
+    ? "Everyone logs in with their Immich email and password (or an API key). Only Immich administrators " +
+      "can change these settings. The API key below is then optional: it only tells whose data the " +
+      "single-user setup was."
+    : "No login with Immich: everyone who can open this tool works on the photos of the API key's owner " +
+      "(protect it with a password below).";
+  form.elements.immich_api_key.placeholder = multi && !keySaved ? "optional" : "paste the key here";
+}
+
 function renderChecks(result) {
   checks.innerHTML = result.checks.map(c =>
     `<li class="${c.ok ? "ok" : "bad"}">${c.ok ? "✓" : "✗"} ${esc(c.label)}${c.detail ? ` – ${esc(c.detail)}` : ""}</li>`).join("");
@@ -27,6 +39,7 @@ function renderChecks(result) {
 async function load() {
   const data = await api("GET", "/api/settings");
   configured = data.configured;
+  keySaved = data.has_api_key;
   for (const [name, value] of Object.entries(data.values)) {
     const el = form.elements[name];
     if (!el) continue;
@@ -38,6 +51,12 @@ async function load() {
   }
   document.getElementById("locked-note").hidden = !data.locked.length;
   renderPassword(data.password, data.password_min_length);
+  // With several users the password is not used; only Immich admins change settings.
+  pwForm.hidden = data.values.multi_user;
+  if (!data.can_edit) {
+    form.querySelectorAll("input, select, button").forEach(el => { el.disabled = true; });
+    document.getElementById("admin-only").hidden = false;
+  }
   document.getElementById("data-dir").textContent = data.data_dir;
   document.getElementById("key-hint").textContent = data.locked.includes("immich_api_key")
     ? "Set by an environment variable."
@@ -48,6 +67,7 @@ async function load() {
     tz.value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   }
   showOllama();
+  showUsers();
 }
 
 try {
@@ -56,6 +76,8 @@ try {
 } catch (e) { /* older browsers: free text only */ }
 
 form.elements.estimator.addEventListener("change", showOllama);
+form.elements.multi_user.addEventListener("change", showUsers);
+document.getElementById("account-logout")?.addEventListener("click", () => document.getElementById("logout").click());
 
 document.getElementById("test").addEventListener("click", async (ev) => {
   const v = fieldValues();
@@ -73,8 +95,9 @@ form.addEventListener("submit", async (ev) => {
   ev.preventDefault();
   saveStatus.textContent = "Saving…";
   try {
-    await api("PUT", "/api/settings", fieldValues());
+    const r = await api("PUT", "/api/settings", fieldValues());
     saveStatus.textContent = "Saved.";
+    if (r.login) { window.location.href = "/login"; return; }
     if (!configured) { window.location.href = "/"; return; }
     form.elements.immich_api_key.value = "";
     await load();
@@ -103,7 +126,7 @@ function renderPassword(state, min) {
   document.getElementById("pw-remove").hidden = state !== "set";
   document.getElementById("pw-save").textContent = state === "set" ? "Change password" : "Set password";
   const logout = document.getElementById("logout");
-  if (logout) logout.hidden = state === "none";
+  if (logout && !document.getElementById("account")) logout.hidden = state === "none";
 }
 
 async function savePassword(newPassword) {
