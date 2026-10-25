@@ -439,7 +439,36 @@ def open_store(data_dir: Path) -> Store:
     return Store(path)
 
 
-def build_guesser(settings: Settings) -> AgeGuesser:
-    """An AgeGuesser talking to the configured Immich server, with its local store in DATA_DIR."""
-    immich = ImmichClient(settings.immich_url, settings.immich_api_key)
+def build_guesser(settings: Settings, immich: ImmichClient | None = None) -> AgeGuesser:
+    """An AgeGuesser talking to the configured Immich server (or through the given client), with its
+    local store in DATA_DIR."""
+    if immich is None:
+        immich = ImmichClient(settings.immich_url, settings.immich_api_key)
     return AgeGuesser(settings, immich, open_store(settings.data_dir))
+
+
+class SharedModels:
+    """One loaded age model per backend and device for all AgeGuessers (one per user)."""
+
+    def __init__(self) -> None:
+        self._models: dict[tuple[str, str], AgeEstimator] = {}
+        self._lock = threading.Lock()
+
+    def share(self, guesser: AgeGuesser) -> AgeGuesser:
+        make = guesser._estimator_factory
+
+        def shared(settings: Settings) -> AgeEstimator:
+            key = (backend_name(settings), settings.device)
+            with self._lock:
+                if key not in self._models:
+                    self._models[key] = make(settings)
+                return self._models[key]
+
+        guesser._estimator_factory = shared
+        return guesser
+
+    def keep_only(self, settings: Settings) -> None:
+        """Forget models other than the one the settings ask for (after a settings change)."""
+        with self._lock:
+            for key in [k for k in self._models if k != (backend_name(settings), settings.device)]:
+                del self._models[key]

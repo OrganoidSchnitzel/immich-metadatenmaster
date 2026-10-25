@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 import uuid
@@ -24,6 +25,8 @@ class Job:
     # Where the job belongs (e.g. {"album_id": ...}), so a page can pick it up again after a reload.
     meta: dict[str, Any] = field(default_factory=dict)
     cancellable: bool = True
+    # The Immich user who started it ("" with a single user): others neither see nor cancel it.
+    owner: str = ""
     status: str = "queued"  # queued | running | done | failed | cancelled
     done: int = 0
     total: int = 0
@@ -48,11 +51,11 @@ class JobManager:
     _pool: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=1))
 
     def submit(self, kind: str, fn: Callable[[Callable[[int, int], None]], Any], *, label: str = "",
-               meta: dict[str, Any] | None = None, cancellable: bool = True) -> Job:
+               meta: dict[str, Any] | None = None, cancellable: bool = True, owner: str = "") -> Job:
         """Run `fn(progress)` in the background. A cancelled job stops at its next progress call; the
         functions keep what they did up to then consistent (written changes are logged)."""
         job = Job(id=uuid.uuid4().hex[:12], kind=kind, label=label or kind, meta=meta or {},
-                  cancellable=cancellable)
+                  cancellable=cancellable, owner=owner)
         with self._lock:
             self._jobs[job.id] = job
             # Keep the most recent jobs only.
@@ -80,20 +83,22 @@ class JobManager:
                 job.error = str(exc) or exc.__class__.__name__
                 job.status = "failed"
 
-        self._pool.submit(run)
+        # In the context of the request that started it (e.g. who is logged in).
+        self._pool.submit(contextvars.copy_context().run, run)
         return job
 
-    def get(self, job_id: str) -> Job | None:
+    def get(self, job_id: str, owner: str = "") -> Job | None:
         with self._lock:
-            return self._jobs.get(job_id)
+            job = self._jobs.get(job_id)
+        return job if job is not None and job.owner == owner else None
 
-    def active(self) -> list[Job]:
+    def active(self, owner: str = "") -> list[Job]:
         with self._lock:
-            return [j for j in self._jobs.values() if j.active]
+            return [j for j in self._jobs.values() if j.active and j.owner == owner]
 
-    def cancel(self, job_id: str) -> Job | None:
+    def cancel(self, job_id: str, owner: str = "") -> Job | None:
         """Ask a job to stop. Returns None if there is no such job; raises ValueError if it cannot stop."""
-        job = self.get(job_id)
+        job = self.get(job_id, owner)
         if job is None:
             return None
         if not job.cancellable:

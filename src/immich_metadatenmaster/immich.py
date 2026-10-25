@@ -10,7 +10,10 @@ import httpx
 
 
 class ImmichError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        # The HTTP status Immich answered with (None: no answer).
+        self.status = status
 
 
 @dataclass(frozen=True)
@@ -158,18 +161,37 @@ def _parse_naive_datetime(value: str | None) -> datetime | None:
 
 
 class ImmichClient:
-    def __init__(self, base_url: str, api_key: str, *, transport: httpx.BaseTransport | None = None,
-                 timeout: float = 60.0) -> None:
+    def __init__(self, base_url: str, api_key: str = "", *, access_token: str = "",
+                 transport: httpx.BaseTransport | None = None, timeout: float = 60.0) -> None:
         base = base_url.rstrip("/")
         if not base.endswith("/api"):
             base += "/api"
         self._http = httpx.Client(
             base_url=base,
-            headers={"x-api-key": api_key, "Accept": "application/json"},
+            headers={"Accept": "application/json", "User-Agent": "Immich Metadatenmaster"},
             timeout=timeout,
             transport=transport,
         )
         self._send_timezone = True
+        self.set_credentials(api_key=api_key, access_token=access_token)
+
+    def set_credentials(self, *, api_key: str = "", access_token: str = "") -> None:
+        """Act with an API key, or with the session token of a login."""
+        self._http.headers.pop("x-api-key", None)
+        self._http.headers.pop("Authorization", None)
+        if access_token:
+            self._http.headers["Authorization"] = f"Bearer {access_token}"
+        elif api_key:
+            self._http.headers["x-api-key"] = api_key
+
+    @property
+    def credentials(self) -> tuple[str, str]:
+        """("api_key" or "token", the secret), or ("", "") without credentials."""
+        if auth := self._http.headers.get("Authorization"):
+            return "token", auth.removeprefix("Bearer ")
+        if key := self._http.headers.get("x-api-key"):
+            return "api_key", key
+        return "", ""
 
     def close(self) -> None:
         self._http.close()
@@ -181,7 +203,7 @@ class ImmichClient:
             raise ImmichError(f"{method} {path} failed: {exc}") from exc
         if resp.status_code >= 400:
             detail = resp.text[:300]
-            raise ImmichError(f"{method} {path} returned {resp.status_code}: {detail}")
+            raise ImmichError(f"{method} {path} returned {resp.status_code}: {detail}", resp.status_code)
         return resp
 
     def _json(self, method: str, path: str, **kwargs: Any) -> Any:
@@ -193,6 +215,24 @@ class ImmichClient:
     def server_version(self) -> str:
         v = self._json("GET", "/server/version")
         return f"{v['major']}.{v['minor']}.{v['patch']}"
+
+    # --- users and logins -------------------------------------------------------------------
+
+    def login(self, email: str, password: str) -> dict[str, Any]:
+        """Log in with an Immich account: the user (id, email, name, admin) and a session token."""
+        d = self._json("POST", "/auth/login", json={"email": email, "password": password})
+        return {"id": d["userId"], "email": d.get("userEmail") or email, "name": d.get("name") or "",
+                "is_admin": bool(d.get("isAdmin")), "token": d["accessToken"]}
+
+    def me(self) -> dict[str, Any]:
+        """The user these credentials belong to (needs user.read for an API key)."""
+        d = self._json("GET", "/users/me")
+        return {"id": d["id"], "email": d.get("email") or "", "name": d.get("name") or "",
+                "is_admin": bool(d.get("isAdmin"))}
+
+    def logout(self) -> None:
+        """End the session of a login (its token stops working)."""
+        self._request("POST", "/auth/logout")
 
     # --- albums and assets ------------------------------------------------------------------
 

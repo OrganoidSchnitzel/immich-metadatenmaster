@@ -34,6 +34,7 @@ ENV_NAMES = {
     "geocoder_url": "GEOCODER_URL",
     "place_names": "PLACE_NAMES",
     "ui_password": "UI_PASSWORD",
+    "multi_user": "MULTI_USER",
 }
 # Only ever taken from the environment: never shown, never written to config.json.
 ENV_ONLY = {"ui_password"}
@@ -90,10 +91,13 @@ class Settings:
     # (stored as a scrypt hash). Neither means no password.
     ui_password: str = ""
     ui_password_hash: str = ""
+    # Everyone logs in with their own Immich account and works on their own photos (the API key and
+    # the password above are then not used by the web UI).
+    multi_user: bool = False
 
     @property
     def configured(self) -> bool:
-        return bool(self.immich_url and self.immich_api_key)
+        return bool(self.immich_url and (self.immich_api_key or self.multi_user))
 
     @property
     def public_url(self) -> str:

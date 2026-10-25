@@ -3,6 +3,18 @@
 {% block content %}
 <section class="narrow">
   <h1>Settings</h1>
+  {% if user %}
+  <div class="account" id="account">
+    <span class="avatar" aria-hidden="true">{{ user.label[:1] | upper }}</span>
+    <div>
+      <strong>{{ user.label }}</strong> <span class="muted">{{ user.email }}</span><br>
+      <small class="muted">Logged in with {{ "an Immich API key" if user.kind == "api_key" else "your Immich account" }}{% if user.is_admin %} · Immich administrator{% endif %}.
+        Your suggestions, tracks and history are your own; nobody else using this tool sees them.</small>
+    </div>
+    <button type="button" id="account-logout">Log out</button>
+  </div>
+  <p id="admin-only" class="notice" hidden>Only Immich administrators can change these settings.</p>
+  {% endif %}
   {% if not configured %}
   <div class="notice">
     <strong>Welcome!</strong> Connect the tool to your Immich server to get started.
@@ -24,6 +36,13 @@
       <label>API key
         <input name="immich_api_key" type="password" placeholder="paste the key here">
         <small id="key-hint"></small>
+      </label>
+      <label>Who uses this tool
+        <select name="multi_user">
+          <option value="false">Only me – the tool works with the API key below</option>
+          <option value="true">Everyone with an Immich account – each logs in and works on their own photos</option>
+        </select>
+        <small id="users-hint"></small>
       </label>
       <label><span>Public Immich URL <span class="muted">(optional)</span></span>
         <input name="immich_public_url" placeholder="https://photos.example.com">
@@ -105,7 +124,7 @@
     <p class="muted">Stored in <code id="data-dir"></code>.</p>
   </form>
 
-  <form id="password-form" class="settings" autocomplete="off">
+  <form id="password-form" class="settings" autocomplete="off" hidden>
     <fieldset>
       <legend>Password</legend>
       <p id="pw-state" class="muted"></p>

@@ -59,6 +59,7 @@ class FakeAsset:
     type: str = "IMAGE"
     visibility: str = "timeline"
     folder: str = "upload"
+    owner: str = "owner"  # the Immich user it belongs to
 
     @property
     def file_created_at(self) -> str:
@@ -78,7 +79,11 @@ class FakeImmich:
         self.date_updates: list[dict[str, Any]] = []
         self.original_downloads = 0
         self.reject_timezone = False
-        self.api_key = "key"
+        # Users, their API keys and the session tokens of logins.
+        self.users: dict[str, dict[str, Any]] = {}
+        self.api_keys: dict[str, str] = {}
+        self.tokens: dict[str, str] = {}
+        self.add_user("owner", "owner@example.com", "Owner", password="owner password", admin=True, api_key="key")
         self.denied_paths: set[str] = set()  # simulate missing API key permissions
         self.location_updates: list[dict[str, Any]] = []
         # Immich clears a location of exactly (0, 0) when it processes it; set to simulate it not doing so.
@@ -91,6 +96,13 @@ class FakeImmich:
         self.smart_search = True
 
     # --- setup helpers ---------------------------------------------------------------------
+
+    def add_user(self, uid: str, email: str, name: str, *, password: str, admin: bool = False,
+                 api_key: str | None = None) -> str:
+        self.users[uid] = {"id": uid, "email": email, "name": name, "isAdmin": admin, "password": password}
+        if api_key:
+            self.api_keys[api_key] = uid
+        return uid
 
     def add_person(self, name: str, birth: date | None) -> str:
         pid = str(uuid.uuid4())
@@ -170,10 +182,31 @@ class FakeImmich:
         body = json.loads(request.content) if request.content else None
         q = request.url.params
 
-        if request.headers.get("x-api-key") != self.api_key:
-            return httpx.Response(401, json={"message": "Invalid API key"})
+        if path == "/auth/login" and method == "POST":
+            user = next((u for u in self.users.values() if u["email"] == body["email"]), None)
+            if user is None or user["password"] != body["password"]:
+                return httpx.Response(401, json={"message": "Incorrect email or password"})
+            token = uuid.uuid4().hex
+            self.tokens[token] = user["id"]
+            return httpx.Response(201, json={"accessToken": token, "userId": user["id"], "userEmail": user["email"],
+                                             "name": user["name"], "isAdmin": user["isAdmin"],
+                                             "profileImagePath": "", "shouldChangePassword": False,
+                                             "isOnboarded": True})
+        if path == "/server/version":  # public
+            return httpx.Response(200, json={"major": 3, "minor": 2, "patch": 0})
+        bearer = request.headers.get("authorization", "").removeprefix("Bearer ")
+        uid = self.tokens.get(bearer) if bearer else self.api_keys.get(request.headers.get("x-api-key", ""))
+        if uid is None or uid not in self.users:
+            return httpx.Response(401, json={"message": "Invalid user token" if bearer else "Invalid API key"})
         if path in self.denied_paths:
             return httpx.Response(403, json={"message": "Missing required permission"})
+        if path == "/users/me" and method == "GET":
+            u = self.users[uid]
+            return httpx.Response(200, json={"id": u["id"], "email": u["email"], "name": u["name"],
+                                             "isAdmin": u["isAdmin"]})
+        if path == "/auth/logout" and method == "POST":
+            self.tokens.pop(bearer, None)
+            return httpx.Response(200, json={"successful": True, "redirectUri": "/auth/login"})
         if path == "/server/version":
             return httpx.Response(200, json={"major": 3, "minor": 2, "patch": 0})
         if path == "/albums" and method == "GET":
@@ -214,6 +247,7 @@ class FakeImmich:
                        if any(f.person_id in body["personIds"] for f in a.faces)]
             else:
                 ids = list(self.assets)
+            ids = [i for i in ids if self.assets[i].owner == uid]
             if "originalFileName" in body:
                 ids = [i for i in ids if body["originalFileName"].lower() in self.assets[i].file_name.lower()]
             if "takenAfter" in body:
@@ -252,7 +286,7 @@ class FakeImmich:
                 a.time_zone = body.get("timeZone") or _fixed_zone(body["dateTimeOriginal"]) or a.time_zone
             return httpx.Response(204)
         if m := re.fullmatch(r"/assets/([^/]+)", path):
-            if m[1] not in self.assets:
+            if m[1] not in self.assets or self.assets[m[1]].owner != uid:
                 return httpx.Response(400, json={"message": "Not found or no asset.read access"})
             a = self.assets[m[1]]
             if method == "PUT":
